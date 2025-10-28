@@ -3,7 +3,7 @@ package services
 import cats.data.EitherT
 import connectors.GoogleBooksConnector
 // Import necessary models for bookshelves/volumes (You'll need to create these)
-import models.{APIError, BookSummary, GoogleApiResponse, BookshelfList, Bookshelf, VolumeList, Volume} // Example new models
+import models.{APIError, BookSummary, GoogleApiResponse, BookshelfList, Bookshelf} // Import existing and new bookshelf models
 import play.api.http.Status._
 import play.api.libs.json._
 

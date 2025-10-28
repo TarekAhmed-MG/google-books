@@ -15,34 +15,31 @@ class MyLibraryController @Inject()(
                                    (implicit ec: ExecutionContext)
   extends BaseController{
 
-  def getBookshelves() = Action.async{
+  // --- Action to get user's bookshelves ---
+  def getBookshelves(): Action[AnyContent] = Action.async { implicit request => // <-- Add implicit request => here
+    // Extract the Access Token passed from Kong (or frontend via Kong)
+    val accessTokenOpt: Option[String] = request.headers.get("Authorization")
+      .filter(_.startsWith("Bearer "))
+      .map(_.drop(7)) // Remove "Bearer " prefix
 
-    def getBookshelves(): Action[AnyContent] = Action.async { implicit request =>
-      // Extract the Access Token passed from Kong (or frontend via Kong)
-      val accessTokenOpt: Option[String] = request.headers.get("Authorization")
-        .filter(_.startsWith("Bearer "))
-        .map(_.drop(7)) // Remove "Bearer " prefix
+    accessTokenOpt match {
+      case Some(token) =>
+        // Call the service method to fetch bookshelves using the token
+        googleBooksService.getMyBookshelves(token).value.map { // .value unwraps the EitherT
+          case Right(bookshelvesData) =>
+            // Successfully fetched data, return it as JSON
+            Ok(Json.toJson(bookshelvesData)) // Implicit OFormat[BookshelfList] should be found now
 
-      accessTokenOpt match {
-        case Some(token) =>
-          // Call the service method to fetch bookshelves using the token
-          googleBooksService.getMyBookshelves(token).value.map { // .value unwraps the EitherT
-            case Right(bookshelvesData) =>
-              // Successfully fetched data, return it as JSON
-              Ok(Json.toJson(bookshelvesData)) // Assuming BookshelfData is serializable to JSON
-
-            case Left(apiError) =>
-              // An error occurred (e.g., token invalid, Google API error)
-              Status(apiError.httpResponseStatus)(Json.obj("error" -> apiError.reason))
-          }
-        case None =>
-          // This *shouldn't* happen if Kong's OIDC plugin is correctly configured and enforced
-          // But handle defensively. Kong should ideally block unauthorized requests.
-          Future.successful(Unauthorized(Json.obj("error" -> "Authorization token is missing or invalid.")))
-      }
+          case Left(apiError) =>
+            // An error occurred (e.g., token invalid, Google API error)
+            Status(apiError.httpResponseStatus)(Json.obj("error" -> apiError.reason))
+        }
+      case None =>
+        // This *shouldn't* happen if Kong's OIDC plugin is correctly configured and enforced
+        // But handle defensively. Kong should ideally block unauthorized requests.
+        Future.successful(Unauthorized(Json.obj("error" -> "Authorization token is missing or invalid.")))
     }
-
-  }
+  } // <-- Closing brace for the Action.async block
 
   // --- (Optional) Action to get volumes on a specific shelf ---
   // def getVolumesOnShelf(shelfId: String): Action[AnyContent] = Action.async { implicit request =>
