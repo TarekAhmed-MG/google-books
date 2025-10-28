@@ -11,5 +11,10 @@ GET     /assets/*file               controllers.Assets.versioned(path="/public",
 
 # conf/routes
 
-# Public book search
-GET   /api/books/search   controllers.GoogleBookController.getGoogleBook(search: String, term: String)
+# Google Auth Code Exchange (POST request)
+POST  /api/auth/google/exchange   controllers.AuthController.exchangeCode()
+
+# Existing routes
+GET   /api/books/search           controllers.GoogleBooksController.getGoogleBook(search: String, term: String)
+#GET   /api/my-library/bookshelves controllers.MyLibraryController.getBookshelves()
+# ... other routes ...

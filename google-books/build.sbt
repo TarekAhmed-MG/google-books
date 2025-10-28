@@ -10,7 +10,8 @@ lazy val root = (project in file("."))
     libraryDependencies ++= Seq(
       guice,
       ws,
-      "org.typelevel" %% "cats-core" % "2.10.0",
+      filters,
+      "org.typelevel" %% "cats-core" % "2.13.0",
       // HMRC mongo compatible with Play 2.9:
       "uk.gov.hmrc.mongo" %% "hmrc-mongo-play-29" % "1.9.0",
       // Testing

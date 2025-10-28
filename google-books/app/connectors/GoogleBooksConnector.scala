@@ -1,26 +1,28 @@
 package connectors
-import cats.data.EitherT
-import models.APIError
-import play.api.libs.json.OFormat
-import play.api.libs.ws.{WSClient, WSResponse}
 
-import javax.inject.Inject
+import play.api.Configuration
+import play.api.libs.ws.{WSClient, WSResponse}
+import javax.inject.{Inject, Singleton}
 import scala.concurrent.{ExecutionContext, Future}
 
-class GoogleBooksConnector @Inject() (ws:WSClient) {
+@Singleton
+class GoogleBooksConnector @Inject()(
+                                      ws: WSClient,
+                                      config: Configuration
+                                    )(implicit ec: ExecutionContext) {
 
-  def get[Response](url:String)(implicit rds: OFormat[Response], ec: ExecutionContext): EitherT[Future, APIError, Response] = {
-    val request = ws.url(url)
-    val response = request.get()
-    EitherT {
-      response
-        .map {
-          result =>
-            Right(result.json.as[Response])
-        }
-        .recover { case _: WSResponse =>
-          Left(APIError.BadAPIResponse(500, "Could not connect"))
-        }
-    }
+  // Read config values directly in the connector
+  private val apiUrl = config.get[String]("google.books.url")
+  private val apiKey = config.get[String]("google.books.apiKey")
+
+  def searchBooks(query: String): Future[WSResponse] = {
+    ws.url(apiUrl)
+      .withQueryStringParameters(
+        "q" -> query,
+        "key" -> apiKey,
+        "maxResults" -> "10", // Limit results for now
+        "orderBy" -> "relevance"
+      )
+      .get() // Returns Future[WSResponse]
   }
 }
