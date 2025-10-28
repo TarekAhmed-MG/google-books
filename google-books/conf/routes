@@ -11,10 +11,28 @@ GET     /assets/*file               controllers.Assets.versioned(path="/public",
 
 # conf/routes
 
-# Google Auth Code Exchange (POST request)
-POST  /api/auth/google/exchange   controllers.AuthController.exchangeCode()
+# Routes
+# This file defines all application routes (Higher priority routes first)
+# https://www.playframework.com/documentation/latest/ScalaRouting
+# ~~~~
 
-# Existing routes
-GET   /api/books/search           controllers.GoogleBooksController.getGoogleBook(search: String, term: String)
-#GET   /api/my-library/bookshelves controllers.MyLibraryController.getBookshelves()
-# ... other routes ...
+# --- Home Page (Example) ---
+GET     /                           controllers.HomeController.index()
+
+# --- Authentication ---
+# Handles the Google OAuth 2.0 code exchange
+POST    /api/auth/google/exchange   controllers.AuthController.exchangeCode()
+
+# --- Public Google Books API ---
+# Handles public book searches
+GET     /api/books/search           controllers.GoogleBooksController.getGoogleBook(search: String, term: String) #
+
+# --- Protected Google Books User Library API ---
+# Fetches the user's bookshelves (Requires valid Bearer token validated by Kong)
+GET     /api/my-library/bookshelves controllers.MyLibraryController.getBookshelves()
+# Add more routes here if needed, e.g., for specific shelves:
+# GET /api/my-library/bookshelves/:shelfId/volumes controllers.MyLibraryController.getVolumesOnShelf(shelfId: String)
+
+
+# --- Static Assets ---
+GET     /assets/*file               controllers.Assets.versioned(path="/public", file: Asset)
