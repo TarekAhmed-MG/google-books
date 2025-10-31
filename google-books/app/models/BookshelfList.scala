@@ -3,7 +3,7 @@ package models
 import play.api.libs.json.{Json, OFormat}
 
 case class BookshelfList(
-                          kind: String,            // "books#bookshelves"
+                          kind: String,            // "books#bookshelves "
                           items: Seq[Bookshelf]    // array of Bookshelf
                         )
 
