@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useState, FormEvent, useCallback } from "react";
-import { jwtDecode } from "jwt-decode"; // kept in case you want to inspect JWTs later
+import { jwtDecode } from "jwt-decode";
 
 // --- Shadcn UI Imports ---
 import { Button } from "@/components/ui/button";
@@ -25,12 +25,11 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2, AlertCircle, LogOut, LogIn } from "lucide-react";
 
-// --- Types for Google OAuth Flow ---
+// --- Types ---
 interface GoogleCredentialResponse {
   credential?: string;
   select_by?: string;
 }
-
 interface GoogleCodeResponse {
   code: string;
   scope: string;
@@ -38,7 +37,6 @@ interface GoogleCodeResponse {
   prompt: string;
   state?: string;
 }
-
 interface GoogleErrorResponse {
   type: string;
   error?: string;
@@ -46,20 +44,15 @@ interface GoogleErrorResponse {
   error_uri?: string;
   state?: string;
 }
-
 interface GoogleCodeClient {
   requestCode: () => void;
 }
-
-// --- Token response from backend after code exchange ---
 interface BackendTokenResponse {
-  access_token: string; // Google OAuth access token (used to call Google Books)
-  id_token: string; // Google ID token (JWT) validated by Kong OIDC
-  user_info: DecodedJwt; // decoded ID token payload for UI
+  access_token: string;
+  id_token: string;
+  user_info: DecodedJwt;
   expires_in: number;
 }
-
-// --- Decoded Google ID token payload ---
 interface DecodedJwt {
   iss: string;
   azp: string;
@@ -76,8 +69,6 @@ interface DecodedJwt {
   exp: number;
   jti: string;
 }
-
-// --- Book Summary interface for search results ---
 interface BookSummary {
   googleId: string;
   title: string;
@@ -86,8 +77,6 @@ interface BookSummary {
   pageCount?: number;
   thumbnailLink?: string;
 }
-
-// --- Minimal volume shape for shelf contents ---
 interface ShelfVolume {
   id?: string;
   volumeInfo?: {
@@ -103,8 +92,6 @@ interface ShelfVolume {
     publisher?: string;
   };
 }
-
-// --- Shelf shape we expect back from /api/my-library/bookshelves ---
 interface ShelfInfo {
   id: number;
   title?: string;
@@ -114,7 +101,7 @@ interface ShelfInfo {
   volumeCount?: number;
 }
 
-// --- Global declaration for Google's OAuth client on window ---
+// --- Global window.google typing ---
 declare global {
   interface Window {
     google?: {
@@ -167,51 +154,33 @@ export default function Home() {
   const [isLoadingSearch, setIsLoadingSearch] = useState<boolean>(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  // --- Auth / Session State ---
+  // --- Auth State ---
   const [user, setUser] = useState<DecodedJwt | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null); // Google access_token
+  const [idToken, setIdToken] = useState<string | null>(null); // Google ID token (JWT)
 
-  // Google OAuth access token -> backend uses this to call Google Books
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-
-  // Google ID token (JWT) -> Kong validates this before proxying protected routes
-  const [idToken, setIdToken] = useState<string | null>(null);
-
-  // --- Shelves and library state ---
-  const [libraryShelves, setLibraryShelves] = useState<ShelfInfo[] | null>(
-      null
-  );
-
-  // Active shelf detail view
+  // --- Library State ---
+  const [libraryShelves, setLibraryShelves] = useState<ShelfInfo[] | null>(null);
   const [activeShelfId, setActiveShelfId] = useState<number | null>(null);
   const [activeShelfTitle, setActiveShelfTitle] = useState<string | null>(null);
   const [shelfVolumes, setShelfVolumes] = useState<ShelfVolume[] | null>(null);
-  const [isLoadingShelfVolumes, setIsLoadingShelfVolumes] =
-      useState<boolean>(false);
+  const [isLoadingShelfVolumes, setIsLoadingShelfVolumes] = useState<boolean>(false);
   const [shelfError, setShelfError] = useState<string | null>(null);
 
-  // --- UI state for login / errors ---
+  // --- UI / Error State ---
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // --- Add-to-shelf interaction state ---
-  // For each book (by googleId), which shelf ID did the user choose?
-  const [addShelfChoice, setAddShelfChoice] = useState<
-      Record<string, string>
-  >({});
-  // Tracks status per book for add: "Added ✅", "Choose a shelf first", error message, etc.
+  // --- Add-to-shelf state ---
+  const [addShelfChoice, setAddShelfChoice] = useState<Record<string, string>>({});
   const [addStatus, setAddStatus] = useState<Record<string, string>>({});
-  // Loading state per book while we POST add
   const [addLoading, setAddLoading] = useState<Record<string, boolean>>({});
 
-  // --- Remove-from-shelf interaction state ---
-  // Tracks status per volume ID inside a shelf (success / error)
+  // --- Remove-from-shelf state ---
   const [removeStatus, setRemoveStatus] = useState<Record<string, string>>({});
-  // Loading state for remove button per volume
-  const [removeLoading, setRemoveLoading] = useState<Record<string, boolean>>(
-      {}
-  );
+  const [removeLoading, setRemoveLoading] = useState<Record<string, boolean>>({});
 
-  // --- Env / Config ---
+  // --- Config ---
   const apiGatewayUrl =
       process.env.NEXT_PUBLIC_API_GATEWAY_URL || "http://104.154.223.55";
 
@@ -219,11 +188,9 @@ export default function Home() {
       process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ||
       "1033367449745-tgkqjo35chh3mqiprqqo8lfup01am8p6.apps.googleusercontent.com";
 
-  // --- Allowed shelves to add to ---
-  // we only expose these in the "Add" dropdown
+  // --- Which shelves are allowed for "Add to shelf" dropdown (whitelist) ---
   const ALLOWED_SHELVES = ["Reading now", "Favorites", "To read"] as const;
 
-  // Build the dropdown list from whatever shelves the API returned
   const addableShelves: ShelfInfo[] = (libraryShelves || []).filter((shelf) => {
     const shelfName = (shelf.title || "").trim().toLowerCase();
     return ALLOWED_SHELVES.some(
@@ -231,7 +198,7 @@ export default function Home() {
     );
   });
 
-  // --- Auth: Google popup -> auth code -> backend exchange ---
+  // ---------- AUTH: LOGIN ----------
   const handleLoginClick = useCallback(() => {
     if (
         !window.google ||
@@ -239,9 +206,7 @@ export default function Home() {
         !window.google.accounts.oauth2
     ) {
       console.error("Google OAuth2 client not loaded");
-      setAuthError(
-          "Google Login library not ready. Please try again in a moment."
-      );
+      setAuthError("Google Login library not ready. Please try again in a moment.");
       return;
     }
 
@@ -259,17 +224,13 @@ export default function Home() {
         ].join(" "),
         ux_mode: "popup",
         callback: async (codeResponse) => {
-          console.log("Received auth code response:", codeResponse);
-
           if (!codeResponse.code) {
-            console.error("No authorization code received from Google.");
             setAuthError("Login failed: No authorization code received.");
             setIsAuthLoading(false);
             return;
           }
 
           try {
-            // Exchange code for tokens via backend (through Kong)
             const backendResponse = await fetch(
                 `${apiGatewayUrl}/api/auth/google/exchange`,
                 {
@@ -290,16 +251,14 @@ export default function Home() {
               throw new Error(errorMsg);
             }
 
-            const tokenData: BackendTokenResponse =
-                await backendResponse.json();
-            console.log("Received tokens from backend:", tokenData);
+            const tokenData: BackendTokenResponse = await backendResponse.json();
 
-            // UI info for header
+            // Show in UI
             setUser(tokenData.user_info);
 
-            // Tokens we will use on protected calls
-            setAccessToken(tokenData.access_token); // used to call Google Books
-            setIdToken(tokenData.id_token); // validated by Kong OIDC
+            // Persist for protected calls
+            setAccessToken(tokenData.access_token);
+            setIdToken(tokenData.id_token);
           } catch (exchangeError: any) {
             console.error("Error exchanging code:", exchangeError);
             setAuthError(
@@ -328,9 +287,9 @@ export default function Home() {
     }
   }, [apiGatewayUrl, googleClientId]);
 
-  // --- Logout ---
+  // ---------- AUTH: LOGOUT ----------
   const handleLogout = () => {
-    const tokenToRevoke = accessToken; // capture before clearing so we can revoke
+    const tokenToRevoke = accessToken;
 
     setUser(null);
     setAccessToken(null);
@@ -351,26 +310,17 @@ export default function Home() {
     setRemoveStatus({});
     setRemoveLoading({});
 
-    // Stop Google from auto-selecting this user silently in future
-    if (
-        window.google &&
-        window.google.accounts &&
-        window.google.accounts.id
-    ) {
+    if (window.google?.accounts?.id) {
       window.google.accounts.id.disableAutoSelect();
     }
-
-    // Revoke Google's access token for hygiene
     if (tokenToRevoke && window.google?.accounts?.oauth2?.revoke) {
       window.google.accounts.oauth2.revoke(tokenToRevoke, () => {
         console.log("Google Access Token revoked.");
       });
     }
-
-    console.log("User logged out");
   };
 
-  // --- Search Google Books through your backend (public-ish) ---
+  // ---------- SEARCH HANDLER ----------
   const handleSearch = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setIsLoadingSearch(true);
@@ -389,7 +339,7 @@ export default function Home() {
           const errorJson = await response.json();
           errorMsg = errorJson.error || errorMsg;
         } catch {
-          /* ignore parse error */
+          /* ignore */
         }
         throw new Error(errorMsg);
       }
@@ -398,7 +348,7 @@ export default function Home() {
       setResults(data);
 
       if (data.length === 0) {
-        setSearchError("No books found matching your search criteria.");
+        setSearchError("No books found matching your search.");
       }
     } catch (err: any) {
       console.error("Search failed:", err);
@@ -408,7 +358,7 @@ export default function Home() {
     }
   };
 
-  // --- Fetch ALL shelves (/mylibrary/bookshelves) ---
+  // ---------- FETCH USER LIBRARY ----------
   const fetchMyLibrary = async () => {
     if (!accessToken || !idToken) {
       setAuthError("Please log in to view your library.");
@@ -419,19 +369,17 @@ export default function Home() {
     setSearchError(null);
     setAuthError(null);
 
-    // Reset currently showing shelf
+    // Reset active shelf view
     setActiveShelfId(null);
     setActiveShelfTitle(null);
     setShelfVolumes(null);
     setShelfError(null);
 
-    const myLibraryUrl = `${apiGatewayUrl}/api/my-library/bookshelves`;
-
     try {
-      const response = await fetch(myLibraryUrl, {
+      const response = await fetch(`${apiGatewayUrl}/api/my-library/bookshelves`, {
         headers: {
-          Authorization: `Bearer ${idToken}`, // validated by Kong
-          "X-Google-Access-Token": accessToken ?? "", // forwarded to Google by backend
+          Authorization: `Bearer ${idToken}`,
+          "X-Google-Access-Token": accessToken ?? "",
         },
       });
 
@@ -444,21 +392,15 @@ export default function Home() {
               errJson.message ||
               errJson.error ||
               errorMsg;
-        } catch {
-          /* ignore */
-        }
-
+        } catch {}
         if (response.status === 401 || response.status === 403) {
-          errorMsg =
-              "Authentication failed or token invalid/expired. Please log in again.";
+          errorMsg = "Token invalid/expired. Please log in again.";
           handleLogout();
         }
-
         throw new Error(errorMsg);
       }
 
       const libraryData = await response.json();
-      console.log("My Library Shelves:", libraryData);
 
       if (libraryData && Array.isArray(libraryData.items)) {
         setLibraryShelves(libraryData.items as ShelfInfo[]);
@@ -475,7 +417,7 @@ export default function Home() {
     }
   };
 
-  // --- Fetch the volumes in a specific shelf (user clicks "View Shelf #x") ---
+  // ---------- FETCH SHELF VOLUMES ----------
   const fetchShelfVolumes = async (shelfId: number, shelfTitle: string) => {
     if (!accessToken || !idToken) {
       setAuthError("Please log in again.");
@@ -488,15 +430,16 @@ export default function Home() {
     setActiveShelfId(shelfId);
     setActiveShelfTitle(shelfTitle);
 
-    const shelfUrl = `${apiGatewayUrl}/api/my-library/bookshelves/${shelfId}/volumes`;
-
     try {
-      const response = await fetch(shelfUrl, {
-        headers: {
-          Authorization: `Bearer ${idToken}`,
-          "X-Google-Access-Token": accessToken ?? "",
-        },
-      });
+      const response = await fetch(
+          `${apiGatewayUrl}/api/my-library/bookshelves/${shelfId}/volumes`,
+          {
+            headers: {
+              Authorization: `Bearer ${idToken}`,
+              "X-Google-Access-Token": accessToken ?? "",
+            },
+          }
+      );
 
       if (!response.ok) {
         let errorMsg = `Shelf fetch failed: ${response.status} ${response.statusText}`;
@@ -507,29 +450,21 @@ export default function Home() {
               errJson.message ||
               errJson.error ||
               errorMsg;
-        } catch {
-          /* ignore */
-        }
-
+        } catch {}
         if (response.status === 401 || response.status === 403) {
-          errorMsg =
-              "Authentication failed or token invalid/expired. Please log in again.";
+          errorMsg = "Token invalid/expired. Please log in.";
           handleLogout();
         }
-
         throw new Error(errorMsg);
       }
 
       const data = await response.json();
-      console.log(`Volumes for shelf #${shelfId}:`, data);
-
       if (data && Array.isArray(data.items)) {
         setShelfVolumes(data.items as ShelfVolume[]);
       } else {
         setShelfVolumes([]);
       }
 
-      // clear old remove states on shelf change
       setRemoveStatus({});
       setRemoveLoading({});
     } catch (err: any) {
@@ -540,11 +475,11 @@ export default function Home() {
     }
   };
 
-  // --- Helper: refresh libraryShelves (and active shelf, if open) after add/remove ---
+  // ---------- REFRESH LIBRARY AFTER ADD/REMOVE ----------
   const refreshLibraryAfterMutation = async () => {
     if (!accessToken || !idToken) return;
 
-    // 1. refresh the shelves list silently
+    // refresh shelves
     try {
       const resp = await fetch(`${apiGatewayUrl}/api/my-library/bookshelves`, {
         headers: {
@@ -569,7 +504,7 @@ export default function Home() {
       console.error("refreshLibraryAfterMutation shelves error:", e);
     }
 
-    // 2. if user is currently viewing a shelf, refresh just that shelf's volumes
+    // refresh active shelf view
     if (activeShelfId !== null) {
       try {
         const shelfResp = await fetch(
@@ -600,10 +535,8 @@ export default function Home() {
     }
   };
 
-  // --- Add a book from search results into a chosen shelf ---
-  // Calls POST /api/my-library/bookshelves/:shelfId/add
+  // ---------- ADD BOOK TO SHELF ----------
   const addBookToShelf = async (bookId: string) => {
-    // bookId here is the Google "volumeId" we stored as book.googleId
     if (!accessToken || !idToken) {
       setAuthError("Please log in.");
       return;
@@ -611,14 +544,10 @@ export default function Home() {
 
     const chosenShelfId = addShelfChoice[bookId];
     if (!chosenShelfId) {
-      setAddStatus((prev) => ({
-        ...prev,
-        [bookId]: "Choose a shelf first",
-      }));
+      setAddStatus((prev) => ({ ...prev, [bookId]: "Choose a shelf first" }));
       return;
     }
 
-    // mark this book as loading
     setAddLoading((prev) => ({ ...prev, [bookId]: true }));
     setAddStatus((prev) => ({ ...prev, [bookId]: "" }));
 
@@ -641,9 +570,7 @@ export default function Home() {
         try {
           const errJson = await resp.json();
           msg = errJson.error || msg;
-        } catch {
-          /* ignore parse error */
-        }
+        } catch {}
         if (resp.status === 401 || resp.status === 403) {
           handleLogout();
           msg = "Session expired. Please log in again.";
@@ -651,14 +578,7 @@ export default function Home() {
         throw new Error(msg);
       }
 
-      console.log("✅ Added", bookId, "to shelf", chosenShelfId);
-
-      setAddStatus((prev) => ({
-        ...prev,
-        [bookId]: "Added ✅",
-      }));
-
-      // refresh shelves + active shelf view
+      setAddStatus((prev) => ({ ...prev, [bookId]: "Added ✅" }));
       await refreshLibraryAfterMutation();
     } catch (err: any) {
       console.error("Error adding to shelf:", err);
@@ -672,12 +592,9 @@ export default function Home() {
     }
   };
 
-  // --- Remove a volume from the active shelf ---
-  // Calls POST /api/my-library/bookshelves/:shelfId/remove
+  // ---------- REMOVE BOOK FROM SHELF ----------
   const removeBookFromShelf = async (volumeId: string | undefined) => {
-    if (!volumeId) {
-      return;
-    }
+    if (!volumeId) return;
     if (!accessToken || !idToken) {
       setAuthError("Please log in.");
       return;
@@ -687,7 +604,6 @@ export default function Home() {
       return;
     }
 
-    // mark this volume as loading
     setRemoveLoading((prev) => ({ ...prev, [volumeId]: true }));
     setRemoveStatus((prev) => ({ ...prev, [volumeId]: "" }));
 
@@ -710,9 +626,7 @@ export default function Home() {
         try {
           const errJson = await resp.json();
           msg = errJson.error || msg;
-        } catch {
-          /* ignore parse error */
-        }
+        } catch {}
         if (resp.status === 401 || resp.status === 403) {
           handleLogout();
           msg = "Session expired. Please log in again.";
@@ -720,26 +634,20 @@ export default function Home() {
         throw new Error(msg);
       }
 
-      console.log("🗑️ Removed", volumeId, "from shelf", activeShelfId);
-
       setRemoveStatus((prev) => ({
         ...prev,
         [volumeId]: "Removed 🗑️",
       }));
 
-      // optimistically filter from UI
-      setShelfVolumes((prev) =>
-          prev ? prev.filter((v) => v.id !== volumeId) : prev
-      );
+      // optimistic UI update
+      setShelfVolumes((prev) => (prev ? prev.filter((v) => v.id !== volumeId) : prev));
 
-      // ALSO refresh shelves + active shelf view to stay in sync with Google
       await refreshLibraryAfterMutation();
     } catch (err: any) {
       console.error("Error removing from shelf:", err);
       setRemoveStatus((prev) => ({
         ...prev,
-        [volumeId]:
-            err.message || "Failed to remove book from this shelf.",
+        [volumeId]: err.message || "Failed to remove book.",
       }));
       setShelfError(err.message || "Failed to remove book from this shelf.");
     } finally {
@@ -747,259 +655,412 @@ export default function Home() {
     }
   };
 
-  // --- UI helper: update which shelf the user picked for a given book ---
+  // ---------- SHELF PICKER CHANGE ----------
   const handleShelfChoiceChange = (bookId: string, shelfId: string) => {
-    setAddShelfChoice((prev) => ({
-      ...prev,
-      [bookId]: shelfId,
-    }));
-    setAddStatus((prev) => ({
-      ...prev,
-      [bookId]: "",
-    }));
+    setAddShelfChoice((prev) => ({ ...prev, [bookId]: shelfId }));
+    setAddStatus((prev) => ({ ...prev, [bookId]: "" }));
   };
 
-  // --- RENDER ---
-  return (
-      <div className="container mx-auto font-sans p-4 sm:p-8 min-h-screen flex flex-col">
-        {/* HEADER / AUTH BAR */}
-        <header className="text-center my-8 flex flex-col sm:flex-row justify-between items-center gap-4">
-          <h1 className="text-3xl font-bold">Google Books Search</h1>
+  // ─────────────────────────────────────────
+  //  VIEW LAYOUTS
+  // ─────────────────────────────────────────
 
-          <div className="auth-section">
-            {!user && (
-                <Button onClick={handleLoginClick} disabled={isAuthLoading}>
-                  {isAuthLoading && (
+  // 1. GOOGLE-LIKE LANDING (Signed out)
+  if (!user) {
+    return (
+        <div className="flex min-h-screen flex-col items-center justify-center bg-background text-foreground p-6">
+          {/* Top-right Sign in */}
+          <div className="absolute right-4 top-4">
+            <Button
+                onClick={handleLoginClick}
+                disabled={isAuthLoading}
+                className="rounded-full px-4 py-2 text-sm font-medium shadow-sm"
+            >
+              {isAuthLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Signing in...
+                  </>
+              ) : (
+                  <>
+                    <LogIn className="mr-2 h-4 w-4" />
+                    Sign in
+                  </>
+              )}
+            </Button>
+          </div>
+
+          {/* Fake Google-ish wordmark */}
+          <div className="text-center mb-8 select-none">
+            <div className="text-5xl font-semibold tracking-[-0.04em]">
+              <span className="text-[#4285F4]">G</span>
+              <span className="text-[#EA4335]">o</span>
+              <span className="text-[#FBBC05]">o</span>
+              <span className="text-[#4285F4]">g</span>
+              <span className="text-[#34A853]">l</span>
+              <span className="text-[#EA4335]">e</span>
+              <span className="text-muted-foreground ml-2 text-xl align-top font-normal">
+              Books
+            </span>
+            </div>
+            <p className="mt-3 text-sm text-muted-foreground">
+              Instant book search. Save to your shelves.
+            </p>
+          </div>
+
+          {/* Center search card */}
+          <Card className="w-full max-w-xl border rounded-2xl shadow-sm">
+            <form
+                onSubmit={handleSearch}
+                className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center"
+            >
+              <Select
+                  value={searchType}
+                  onValueChange={setSearchType}
+              >
+                <SelectTrigger className="w-full sm:w-[130px] rounded-full bg-muted/40 border-muted-foreground/20 text-sm">
+                  <SelectValue placeholder="Type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="general">All</SelectItem>
+                  <SelectItem value="intitle">Title</SelectItem>
+                  <SelectItem value="inauthor">Author</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <Input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search millions of books..."
+                  required
+                  className="flex-grow rounded-full bg-muted/40 border-muted-foreground/20 text-sm px-4 py-2 h-10"
+              />
+
+              <Button
+                  type="submit"
+                  disabled={isLoadingSearch || !searchTerm.trim()}
+                  className="rounded-full px-5 text-sm font-medium"
+              >
+                {isLoadingSearch ? (
+                    <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  )}
-                  <LogIn className="mr-2 h-4 w-4" /> Sign in with Google
-                </Button>
+                      Searching...
+                    </>
+                ) : (
+                    "Search"
+                )}
+              </Button>
+            </form>
+
+            {authError && (
+                <Alert
+                    className="mx-6 mb-4 mt-2 rounded-lg border-red-300/50 bg-red-50 text-red-700"
+                    variant="destructive"
+                >
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle className="text-sm font-semibold">
+                    Login / Access Error
+                  </AlertTitle>
+                  <AlertDescription className="text-xs">
+                    {authError}
+                  </AlertDescription>
+                </Alert>
             )}
 
-            {user && (
-                <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-                  <div className="flex flex-row gap-4 items-center">
-                    <Button
-                        onClick={fetchMyLibrary}
-                        variant="outline"
-                        disabled={isLoadingSearch}
-                    >
-                      {isLoadingSearch && results.length === 0 && (
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      )}
-                      View My Library
-                    </Button>
+            {searchError && !isLoadingSearch && (
+                <Alert
+                    variant="destructive"
+                    className="mx-6 mb-4 mt-2 rounded-lg border-red-300/50 bg-red-50 text-red-700"
+                >
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle className="text-sm font-semibold">
+                    Notice
+                  </AlertTitle>
+                  <AlertDescription className="text-xs">
+                    {searchError}
+                  </AlertDescription>
+                </Alert>
+            )}
 
-                    <div className="text-right">
-                      <p className="text-sm font-medium">{user.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {user.email}
-                      </p>
-                    </div>
+            {/* Search results preview under hero if logged out */}
+            {!isLoadingSearch && results.length > 0 && (
+                <div className="px-6 pb-6">
+                  <h2 className="text-sm font-medium text-muted-foreground mb-3">
+                    Top results
+                  </h2>
 
-                    {user.picture && (
-                        <Image
-                            src={user.picture}
-                            alt="User profile"
-                            width={40}
-                            height={40}
-                            className="rounded-full"
-                        />
-                    )}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {results.slice(0, 4).map((book) => (
+                        <div
+                            key={book.googleId}
+                            className="flex gap-3 rounded-lg border bg-card p-3 text-card-foreground hover:bg-accent hover:text-accent-foreground transition"
+                        >
+                          <div className="relative h-20 w-16 flex-shrink-0 overflow-hidden rounded-md bg-muted">
+                            {book.thumbnailLink ? (
+                                <Image
+                                    src={book.thumbnailLink.replace(/^http:/, "https:")}
+                                    alt={book.title}
+                                    fill
+                                    sizes="80px"
+                                    style={{ objectFit: "cover" }}
+                                    className="rounded-md"
+                                />
+                            ) : (
+                                <div className="h-full w-full flex items-center justify-center text-[10px] text-muted-foreground">
+                                  No image
+                                </div>
+                            )}
+                          </div>
 
-                    <Button
-                        variant="outline"
-                        size="icon"
-                        onClick={handleLogout}
-                        title="Log Out"
-                    >
-                      <LogOut className="h-4 w-4" />
-                    </Button>
+                          <div className="flex flex-col min-w-0">
+                            <p className="text-sm font-semibold line-clamp-2">
+                              {book.title}
+                            </p>
+                            {book.authors && (
+                                <p className="text-[11px] text-muted-foreground line-clamp-1">
+                                  {book.authors.join(", ")}
+                                </p>
+                            )}
+                            <p className="text-[11px] text-muted-foreground line-clamp-2">
+                              {book.description || "No description."}
+                            </p>
+                          </div>
+                        </div>
+                    ))}
                   </div>
 
-                  {libraryShelves && libraryShelves.length > 0 && (
-                      <p className="text-[11px] text-muted-foreground text-center sm:text-right leading-tight">
-                        Tip: pick a shelf on a book card and click &quot;Add&quot;
-                      </p>
-                  )}
+                  <p className="mt-4 text-[11px] text-center text-muted-foreground">
+                    Sign in to save books and build your shelves.
+                  </p>
                 </div>
             )}
+          </Card>
+
+          <footer className="mt-12 text-[11px] text-muted-foreground text-center">
+            Google Books clone • Next.js • shadcn/ui
+          </footer>
+        </div>
+    );
+  }
+
+  // 2. DASHBOARD (Signed in)
+  return (
+      <div className="min-h-screen bg-background text-foreground flex flex-col">
+        {/* Top Nav Bar */}
+        <header className="flex items-center justify-between border-b bg-card/50 px-4 py-3 sm:px-6">
+          <div className="flex items-center gap-2">
+            {/* Mini brand */}
+            <div className="text-lg font-semibold tracking-[-0.04em] leading-none select-none">
+              <span className="text-[#4285F4]">G</span>
+              <span className="text-[#EA4335]">B</span>
+              <span className="text-[#FBBC05]">o</span>
+              <span className="text-[#4285F4]">o</span>
+              <span className="text-[#34A853]">k</span>
+              <span className="text-[#EA4335]">s</span>
+            </div>
+
+            <Button
+                onClick={fetchMyLibrary}
+                variant="outline"
+                size="sm"
+                disabled={isLoadingSearch}
+                className="rounded-full text-xs font-medium h-8 px-3"
+            >
+              {isLoadingSearch && (
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+              )}
+              My Library
+            </Button>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="text-right leading-tight">
+              <p className="text-xs font-medium">{user.name}</p>
+              <p className="text-[10px] text-muted-foreground">
+                {user.email}
+              </p>
+            </div>
+
+            {user.picture && (
+                <Image
+                    src={user.picture}
+                    alt="User profile"
+                    width={36}
+                    height={36}
+                    className="rounded-full border bg-muted object-cover"
+                />
+            )}
+
+            <Button
+                variant="outline"
+                size="icon"
+                onClick={handleLogout}
+                title="Log Out"
+                className="rounded-full h-8 w-8"
+            >
+              <LogOut className="h-4 w-4" />
+            </Button>
           </div>
         </header>
 
-        {/* AUTH / ACCESS ERRORS */}
-        {authError && (
-            <Alert className="w-full max-w-2xl mx-auto mb-4" variant="destructive">
-              <AlertCircle className="h-4 w-4" />
-              <AlertTitle>Login / Access Error</AlertTitle>
-              <AlertDescription>{authError}</AlertDescription>
-            </Alert>
-        )}
-
-        {/* SEARCH FORM */}
-        <form
-            onSubmit={handleSearch}
-            className="flex flex-col sm:flex-row gap-2 w-full max-w-2xl mx-auto items-center mb-8"
-        >
-          <Select value={searchType} onValueChange={setSearchType}>
-            <SelectTrigger className="w-full sm:w-[120px]">
-              <SelectValue placeholder="Type" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="general">General</SelectItem>
-              <SelectItem value="intitle">Title</SelectItem>
-              <SelectItem value="inauthor">Author</SelectItem>
-            </SelectContent>
-          </Select>
-
-          <Input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search for books..."
-              required
-              className="flex-grow"
-          />
-
-          <Button
-              type="submit"
-              disabled={isLoadingSearch || !searchTerm.trim()}
-              className="w-full sm:w-auto"
-          >
-            {isLoadingSearch && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            )}
-            {isLoadingSearch ? "Searching..." : "Search"}
-          </Button>
-        </form>
-
-        {/* MAIN CONTENT */}
-        <main className="flex-grow w-full max-w-5xl mx-auto">
-          {/* GLOBAL LOADING INDICATOR */}
-          {isLoadingSearch && (
-              <div className="flex justify-center items-center mt-10">
-                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                <span className="ml-2 text-muted-foreground">Loading...</span>
-              </div>
-          )}
-
-          {/* NOTICE / ERROR */}
-          {searchError && !isLoadingSearch && (
-              <Alert
-                  variant="destructive"
-                  className="w-full max-w-2xl mx-auto mt-4"
-              >
-                <AlertCircle className="h-4 w-4" />
-                <AlertTitle>Notice</AlertTitle>
-                <AlertDescription>{searchError}</AlertDescription>
-              </Alert>
-          )}
-
-          {/* INITIAL EMPTY STATE */}
-          {!isLoadingSearch &&
-              !searchError &&
-              results.length === 0 &&
-              !authError &&
-              !libraryShelves && (
-                  <p className="text-center text-muted-foreground mt-10">
-                    {searchTerm && !isLoadingSearch
-                        ? "No books found."
-                        : "Search for a book, or sign in and load your library."}
-                  </p>
+        {/* Error banner (auth / access / shelf) */}
+        {(authError || shelfError || searchError) && (
+            <div className="px-4 py-2 sm:px-6">
+              {authError && (
+                  <Alert
+                      className="rounded-lg border-red-300/50 bg-red-50 text-red-700"
+                      variant="destructive"
+                  >
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle className="text-sm font-semibold">
+                      Login / Access Error
+                    </AlertTitle>
+                    <AlertDescription className="text-xs">
+                      {authError}
+                    </AlertDescription>
+                  </Alert>
               )}
 
-          {/* SEARCH RESULTS GRID */}
-          {!isLoadingSearch && !searchError && results.length > 0 && (
-              <section className="mb-12">
-                <h2 className="text-xl font-semibold mb-4 flex items-center justify-between">
-                  <span>Search Results</span>
-                  <span className="text-sm text-muted-foreground">
-                {results.length} result
-                    {results.length === 1 ? "" : "s"}
-              </span>
-                </h2>
+              {shelfError && (
+                  <Alert
+                      className="mt-2 rounded-lg border-red-300/50 bg-red-50 text-red-700"
+                      variant="destructive"
+                  >
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle className="text-sm font-semibold">
+                      Shelf Error
+                    </AlertTitle>
+                    <AlertDescription className="text-xs">
+                      {shelfError}
+                    </AlertDescription>
+                  </Alert>
+              )}
 
-                <div className="w-full grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                  {results.map((book) => {
-                    const thisBookId = book.googleId;
-                    const chosenShelfId = addShelfChoice[thisBookId] || "";
-                    const statusMsg = addStatus[thisBookId] || "";
-                    const isAdding = !!addLoading[thisBookId];
+              {searchError && (
+                  <Alert
+                      className="mt-2 rounded-lg border-red-300/50 bg-red-50 text-red-700"
+                      variant="destructive"
+                  >
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertTitle className="text-sm font-semibold">
+                      Notice
+                    </AlertTitle>
+                    <AlertDescription className="text-xs">
+                      {searchError}
+                    </AlertDescription>
+                  </Alert>
+              )}
+            </div>
+        )}
 
-                    return (
-                        <Card
-                            key={thisBookId}
-                            className="flex flex-col overflow-hidden"
-                        >
-                          <CardHeader className="p-4">
-                            {book.thumbnailLink ? (
-                                <div className="relative aspect-[3/4] w-full mb-2 bg-muted rounded-md overflow-hidden">
-                                  <Image
-                                      src={book.thumbnailLink.replace(/^http:/, "https:")}
-                                      alt={`Cover of ${book.title}`}
-                                      fill
-                                      sizes="(max-width: 640px) 90vw, (max-width: 768px) 45vw, (max-width: 1024px) 30vw, 23vw"
-                                      style={{ objectFit: "contain" }}
-                                      className="transition-opacity opacity-0 duration-500"
-                                      onLoadingComplete={(image) =>
-                                          image.classList.remove("opacity-0")
-                                      }
-                                      unoptimized={book.thumbnailLink.includes(
-                                          "googleusercontent.com"
-                                      )}
-                                      onError={(e) => {
-                                        const parentDiv =
-                                            e.currentTarget.closest("div");
-                                        if (parentDiv) parentDiv.style.display = "none";
-                                        const cardHeader =
-                                            e.currentTarget.closest(".p-4");
-                                        const placeholder = cardHeader?.querySelector(
-                                            ".image-placeholder-fallback"
-                                        ) as HTMLElement | null;
-                                        if (placeholder)
-                                          placeholder.style.display = "flex";
-                                      }}
-                                  />
-                                  <div
-                                      className="image-placeholder-fallback absolute inset-0 flex items-center justify-center bg-muted text-muted-foreground text-xs p-2 text-center"
-                                      style={{ display: "none" }}
-                                  >
-                                    Image not available
-                                  </div>
-                                </div>
-                            ) : (
-                                <div className="aspect-[3/4] w-full mb-2 bg-muted rounded-md flex items-center justify-center text-muted-foreground text-xs p-2 text-center">
-                                  Image not available
-                                </div>
-                            )}
+        {/* Main dashboard grid */}
+        <main className="flex-1 px-4 py-6 sm:px-6">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* LEFT COLUMN: Search panel */}
+            <section className="lg:col-span-1">
+              <Card className="rounded-2xl border shadow-sm">
+                <CardHeader className="p-4 pb-2">
+                  <CardTitle className="text-base font-semibold">
+                    Search Books
+                  </CardTitle>
+                  <CardDescription className="text-xs text-muted-foreground">
+                    Find anything and add it straight to a shelf.
+                  </CardDescription>
+                </CardHeader>
 
-                            <CardTitle className="text-base font-semibold line-clamp-2">
-                              {book.title}
-                            </CardTitle>
+                <CardContent className="p-4 pt-0">
+                  <form
+                      onSubmit={handleSearch}
+                      className="flex flex-col gap-3"
+                  >
+                    <div className="flex flex-row gap-2">
+                      <Select
+                          value={searchType}
+                          onValueChange={setSearchType}
+                      >
+                        <SelectTrigger className="w-[110px] rounded-full bg-muted/40 border-muted-foreground/20 text-xs">
+                          <SelectValue placeholder="Type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="general">All</SelectItem>
+                          <SelectItem value="intitle">Title</SelectItem>
+                          <SelectItem value="inauthor">Author</SelectItem>
+                        </SelectContent>
+                      </Select>
 
-                            {book.authors && (
-                                <CardDescription className="text-xs line-clamp-1">
-                                  By {book.authors.join(", ")}
-                                </CardDescription>
-                            )}
-                          </CardHeader>
+                      <Input
+                          type="text"
+                          value={searchTerm}
+                          onChange={(e) => setSearchTerm(e.target.value)}
+                          placeholder="Search…"
+                          required
+                          className="flex-grow rounded-full bg-muted/40 border-muted-foreground/20 text-xs px-3 py-2 h-9"
+                      />
+                    </div>
 
-                          <CardContent className="p-4 pt-0 flex-grow">
-                            <p className="text-xs text-muted-foreground line-clamp-4">
-                              {book.description || "No description available."}
-                            </p>
-                          </CardContent>
+                    <Button
+                        type="submit"
+                        disabled={isLoadingSearch || !searchTerm.trim()}
+                        className="w-full rounded-full text-xs font-medium h-9"
+                    >
+                      {isLoadingSearch ? (
+                          <>
+                            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                            Searching...
+                          </>
+                      ) : (
+                          "Search"
+                      )}
+                    </Button>
+                  </form>
+                </CardContent>
 
-                          <CardFooter className="p-4 pt-0 flex flex-col gap-2 text-xs text-muted-foreground">
-                            {book.pageCount ? (
-                                <span className="text-[11px]">
-                          {book.pageCount} pages
-                        </span>
-                            ) : null}
+                {/* RESULTS */}
+                {!isLoadingSearch && results.length > 0 && (
+                    <CardFooter className="p-4 border-t flex flex-col gap-4 max-h-[50vh] overflow-y-auto text-xs">
+                      {results.map((book) => {
+                        const thisBookId = book.googleId;
+                        const chosenShelfId = addShelfChoice[thisBookId] || "";
+                        const statusMsg = addStatus[thisBookId] || "";
+                        const isAdding = !!addLoading[thisBookId];
 
-                            {/* Add-to-shelf controls (only if logged in AND we have allowed shelves) */}
-                            {user && addableShelves && addableShelves.length > 0 ? (
-                                <div className="w-full flex flex-col gap-2">
+                        return (
+                            <div
+                                key={thisBookId}
+                                className="flex w-full gap-3 rounded-lg border bg-card p-3 text-card-foreground shadow-sm"
+                            >
+                              <div className="relative h-24 w-16 flex-shrink-0 overflow-hidden rounded-md bg-muted">
+                                {book.thumbnailLink ? (
+                                    <Image
+                                        src={book.thumbnailLink.replace(/^http:/, "https:")}
+                                        alt={`Cover of ${book.title}`}
+                                        fill
+                                        sizes="96px"
+                                        style={{ objectFit: "cover" }}
+                                        className="rounded-md"
+                                    />
+                                ) : (
+                                    <div className="h-full w-full flex items-center justify-center text-[10px] text-muted-foreground">
+                                      No image
+                                    </div>
+                                )}
+                              </div>
+
+                              <div className="flex min-w-0 flex-1 flex-col">
+                                <p className="text-sm font-semibold leading-snug line-clamp-2">
+                                  {book.title}
+                                </p>
+                                {book.authors && (
+                                    <p className="text-[11px] text-muted-foreground leading-snug line-clamp-1">
+                                      {book.authors.join(", ")}
+                                    </p>
+                                )}
+                                <p className="mt-1 text-[11px] text-muted-foreground leading-snug line-clamp-3">
+                                  {book.description || "No description available."}
+                                </p>
+
+                                <div className="mt-3 flex flex-col gap-2">
                                   <div className="flex flex-row gap-2 items-center">
                                     <Select
                                         value={chosenShelfId}
@@ -1007,20 +1068,20 @@ export default function Home() {
                                             handleShelfChoiceChange(thisBookId, val)
                                         }
                                     >
-                                      <SelectTrigger className="w-full">
+                                      <SelectTrigger className="w-full rounded-full bg-muted/40 border-muted-foreground/20 text-[11px] h-8 px-3">
                                         <SelectValue placeholder="Select shelf…" />
                                       </SelectTrigger>
-
                                       <SelectContent>
                                         {addableShelves.length === 0 ? (
-                                            <div className="px-3 py-2 text-xs text-muted-foreground">
-                                              No writable shelves found.
+                                            <div className="px-3 py-2 text-[11px] text-muted-foreground">
+                                              No writable shelves
                                             </div>
                                         ) : (
                                             addableShelves.map((shelf) => (
                                                 <SelectItem
                                                     key={shelf.id}
                                                     value={String(shelf.id)}
+                                                    className="text-[11px]"
                                                 >
                                                   {shelf.title || `Shelf ${shelf.id}`}{" "}
                                                   {typeof shelf.volumeCount === "number"
@@ -1037,10 +1098,10 @@ export default function Home() {
                                         variant="outline"
                                         disabled={isAdding}
                                         onClick={() => addBookToShelf(thisBookId)}
-                                        title="Add this book to the selected shelf"
+                                        className="rounded-full text-[11px] font-medium h-8 px-3"
                                     >
                                       {isAdding ? (
-                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                       ) : (
                                           "Add"
                                       )}
@@ -1055,283 +1116,258 @@ export default function Home() {
                                                 : "text-[11px] text-red-600"
                                           }
                                       >
-                              {statusMsg}
-                            </span>
+                                {statusMsg}
+                              </span>
                                   )}
                                 </div>
-                            ) : user && !libraryShelves ? (
-                                <span className="text-[11px] text-muted-foreground">
-                          Load &quot;My Library&quot; first to add this.
-                        </span>
-                            ) : user && addableShelves.length === 0 ? (
-                                <span className="text-[11px] text-muted-foreground">
-                          No supported target shelves.
-                        </span>
-                            ) : null}
-                          </CardFooter>
-                        </Card>
-                    );
-                  })}
-                </div>
-              </section>
-          )}
-
-          {/* USER'S SHELVES GRID (AFTER "View My Library") */}
-          {!isLoadingSearch && libraryShelves && (
-              <section className="mb-12">
-                <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between mb-4">
-                  <h2 className="text-xl font-semibold">
-                    Your Google Books Shelves
-                  </h2>
-                  <span className="text-sm text-muted-foreground mt-2 sm:mt-0">
-                {libraryShelves.length} shelf
-                    {libraryShelves.length === 1 ? "" : "s"}
-              </span>
-                </div>
-
-                {libraryShelves.length === 0 ? (
-                    <p className="text-sm text-muted-foreground text-center">
-                      You don't have any shelves yet.
-                    </p>
-                ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {libraryShelves.map((shelf) => (
-                          <Card key={shelf.id} className="flex flex-col">
-                            <CardHeader className="p-4 pb-2">
-                              <CardTitle className="text-base font-semibold line-clamp-1">
-                                {shelf.title || "Untitled Shelf"}
-                              </CardTitle>
-
-                              <CardDescription className="text-xs text-muted-foreground flex flex-col">
-                        <span>
-                          {shelf.volumeCount != null
-                              ? `${shelf.volumeCount} book${
-                                  shelf.volumeCount === 1 ? "" : "s"
-                              }`
-                              : "0 books"}
-                        </span>
-
-                                {shelf.access && (
-                                    <span className="uppercase tracking-wide text-[10px] text-muted-foreground/70">
-                            {shelf.access}
-                          </span>
-                                )}
-                              </CardDescription>
-                            </CardHeader>
-
-                            <CardContent className="p-4 pt-0 text-xs text-muted-foreground flex flex-col gap-1">
-                              {shelf.updated && (
-                                  <p>
-                          <span className="font-medium text-foreground">
-                            Updated:
-                          </span>{" "}
-                                    {shelf.updated}
-                                  </p>
-                              )}
-                              {shelf.volumesLastUpdated && (
-                                  <p>
-                          <span className="font-medium text-foreground">
-                            Volumes last updated:
-                          </span>{" "}
-                                    {shelf.volumesLastUpdated}
-                                  </p>
-                              )}
-                            </CardContent>
-
-                            <CardFooter className="p-4 pt-0">
-                              <Button
-                                  variant="outline"
-                                  className="w-full text-xs"
-                                  onClick={() =>
-                                      fetchShelfVolumes(
-                                          shelf.id,
-                                          shelf.title || `Shelf ${shelf.id}`
-                                      )
-                                  }
-                                  disabled={isLoadingShelfVolumes}
-                                  title={`View books in '${shelf.title || shelf.id}'`}
-                              >
-                                {isLoadingShelfVolumes &&
-                                activeShelfId === shelf.id ? (
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                ) : null}
-                                View Shelf #{shelf.id}
-                              </Button>
-                            </CardFooter>
-                          </Card>
-                      ))}
-                    </div>
+                              </div>
+                            </div>
+                        );
+                      })}
+                    </CardFooter>
                 )}
-              </section>
-          )}
+              </Card>
+            </section>
 
-          {/* ACTIVE SHELF VOLUMES */}
-          {libraryShelves && activeShelfId !== null && (
-              <section className="mb-16">
-                <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between mb-4">
-                  <h2 className="text-xl font-semibold">
-                    Shelf {activeShelfId}
-                    {activeShelfTitle ? ` – ${activeShelfTitle}` : ""}
-                  </h2>
+            {/* MIDDLE COLUMN: Shelves list */}
+            <section className="lg:col-span-1">
+              <Card className="rounded-2xl border shadow-sm h-full flex flex-col">
+                <CardHeader className="p-4 pb-2 flex flex-row items-start justify-between">
+                  <div>
+                    <CardTitle className="text-base font-semibold">
+                      Your Shelves
+                    </CardTitle>
+                    <CardDescription className="text-xs text-muted-foreground">
+                      Click a shelf to view / manage.
+                    </CardDescription>
+                  </div>
 
-                  {isLoadingShelfVolumes && (
-                      <span className="text-sm text-muted-foreground flex items-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading shelf…
-                </span>
+                  <div className="text-right text-[11px] text-muted-foreground">
+                    {libraryShelves
+                        ? `${libraryShelves.length} shelf${
+                            libraryShelves.length === 1 ? "" : "s"
+                        }`
+                        : "—"}
+                  </div>
+                </CardHeader>
+
+                <CardContent className="p-4 pt-0 flex-1 overflow-y-auto text-xs max-h-[60vh]">
+                  {(!libraryShelves || libraryShelves.length === 0) && (
+                      <p className="text-muted-foreground text-xs text-center py-6">
+                        {libraryShelves
+                            ? "You don't have any shelves yet."
+                            : "Load your library to see shelves."}
+                      </p>
                   )}
-                </div>
 
-                {shelfError && (
-                    <Alert
-                        variant="destructive"
-                        className="w-full max-w-2xl mx-auto mt-4"
-                    >
-                      <AlertCircle className="h-4 w-4" />
-                      <AlertTitle>Shelf Error</AlertTitle>
-                      <AlertDescription>{shelfError}</AlertDescription>
-                    </Alert>
+                  {libraryShelves && libraryShelves.length > 0 && (
+                      <div className="grid grid-cols-1 gap-3">
+                        {libraryShelves.map((shelf) => (
+                            <button
+                                key={shelf.id}
+                                onClick={() =>
+                                    fetchShelfVolumes(
+                                        shelf.id,
+                                        shelf.title || `Shelf ${shelf.id}`
+                                    )
+                                }
+                                disabled={isLoadingShelfVolumes}
+                                title={`View books in '${shelf.title || shelf.id}'`}
+                                className="w-full text-left rounded-xl border bg-card p-4 shadow-sm hover:bg-accent hover:text-accent-foreground transition"
+                            >
+                              <div className="flex flex-col">
+                                <div className="flex items-baseline justify-between">
+                            <span className="text-sm font-semibold line-clamp-1">
+                              {shelf.title || "Untitled Shelf"}
+                            </span>
+                                  <span className="ml-2 text-[10px] text-muted-foreground">
+                              #{shelf.id}
+                            </span>
+                                </div>
+
+                                <div className="mt-1 text-[11px] text-muted-foreground leading-snug">
+                                  {shelf.volumeCount != null
+                                      ? `${shelf.volumeCount} book${
+                                          shelf.volumeCount === 1 ? "" : "s"
+                                      }`
+                                      : "0 books"}
+                                  {shelf.access && (
+                                      <>
+                                        {" "}
+                                        •{" "}
+                                        <span className="uppercase tracking-wide">
+                                  {shelf.access}
+                                </span>
+                                      </>
+                                  )}
+                                </div>
+
+                                {(shelf.updated || shelf.volumesLastUpdated) && (
+                                    <div className="mt-1 text-[10px] text-muted-foreground leading-snug">
+                                      {shelf.updated && (
+                                          <div>
+                                  <span className="font-medium text-foreground">
+                                    Updated:
+                                  </span>{" "}
+                                            {shelf.updated}
+                                          </div>
+                                      )}
+                                      {shelf.volumesLastUpdated && (
+                                          <div>
+                                  <span className="font-medium text-foreground">
+                                    Volumes:
+                                  </span>{" "}
+                                            {shelf.volumesLastUpdated}
+                                          </div>
+                                      )}
+                                    </div>
+                                )}
+                              </div>
+                            </button>
+                        ))}
+                      </div>
+                  )}
+                </CardContent>
+
+                {isLoadingShelfVolumes && (
+                    <CardFooter className="p-4 border-t text-xs text-muted-foreground flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <span>Loading shelf…</span>
+                    </CardFooter>
                 )}
+              </Card>
+            </section>
 
-                {!isLoadingShelfVolumes &&
-                    shelfVolumes &&
-                    shelfVolumes.length === 0 && (
-                        <p className="text-sm text-muted-foreground text-center">
-                          No books in this shelf.
-                        </p>
-                    )}
+            {/* RIGHT COLUMN: Active Shelf detail */}
+            <section className="lg:col-span-1">
+              <Card className="rounded-2xl border shadow-sm h-full flex flex-col">
+                <CardHeader className="p-4 pb-2 flex flex-col gap-1">
+                  <CardTitle className="text-base font-semibold">
+                    {activeShelfId === null
+                        ? "No Shelf Selected"
+                        : `Shelf ${activeShelfId}${
+                            activeShelfTitle ? ` – ${activeShelfTitle}` : ""
+                        }`}
+                  </CardTitle>
+                  <CardDescription className="text-xs text-muted-foreground">
+                    {activeShelfId === null
+                        ? "Choose a shelf from the middle column."
+                        : "Remove books from this shelf."}
+                  </CardDescription>
+                </CardHeader>
 
-                {!isLoadingShelfVolumes &&
-                    shelfVolumes &&
-                    shelfVolumes.length > 0 && (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                          {shelfVolumes.map((vol, idx) => {
-                            const info = vol.volumeInfo || {};
-                            const thumb =
-                                info.imageLinks?.thumbnail ||
-                                info.imageLinks?.smallThumbnail ||
-                                "";
-                            const volId = vol.id || `vol-${idx}`;
+                <CardContent className="p-4 pt-0 flex-1 overflow-y-auto text-xs max-h-[60vh]">
+                  {!isLoadingShelfVolumes &&
+                      shelfVolumes &&
+                      shelfVolumes.length === 0 &&
+                      activeShelfId !== null && (
+                          <p className="text-muted-foreground text-xs text-center py-6">
+                            No books in this shelf.
+                          </p>
+                      )}
 
-                            const isRemoving = !!removeLoading[volId];
-                            const removeMsg = removeStatus[volId] || "";
+                  {!isLoadingShelfVolumes &&
+                      shelfVolumes &&
+                      shelfVolumes.length > 0 && (
+                          <div className="grid grid-cols-1 gap-4">
+                            {shelfVolumes.map((vol, idx) => {
+                              const info = vol.volumeInfo || {};
+                              const thumb =
+                                  info.imageLinks?.thumbnail ||
+                                  info.imageLinks?.smallThumbnail ||
+                                  "";
+                              const volId = vol.id || `vol-${idx}`;
 
-                            return (
-                                <Card
-                                    key={vol.id || `${activeShelfId}-${idx}`}
-                                    className="flex flex-col overflow-hidden"
-                                >
-                                  <CardHeader className="p-4">
-                                    {thumb ? (
-                                        <div className="relative aspect-[3/4] w-full mb-2 bg-muted rounded-md overflow-hidden">
+                              const isRemoving = !!removeLoading[volId];
+                              const removeMsg = removeStatus[volId] || "";
+
+                              return (
+                                  <div
+                                      key={volId}
+                                      className="flex w-full gap-3 rounded-xl border bg-card p-3 text-card-foreground shadow-sm"
+                                  >
+                                    <div className="relative h-24 w-16 flex-shrink-0 overflow-hidden rounded-md bg-muted">
+                                      {thumb ? (
                                           <Image
                                               src={thumb.replace(/^http:/, "https:")}
                                               alt={`Cover of ${info.title || "Untitled"}`}
                                               fill
-                                              sizes="(max-width: 640px) 90vw, (max-width: 768px) 45vw, (max-width: 1024px) 30vw, 23vw"
-                                              style={{ objectFit: "contain" }}
-                                              className="transition-opacity opacity-0 duration-500"
-                                              onLoadingComplete={(image) =>
-                                                  image.classList.remove("opacity-0")
-                                              }
-                                              unoptimized={thumb.includes(
-                                                  "googleusercontent.com"
-                                              )}
-                                              onError={(e) => {
-                                                const parentDiv =
-                                                    e.currentTarget.closest("div");
-                                                if (parentDiv)
-                                                  parentDiv.style.display = "none";
-                                                const cardHeader =
-                                                    e.currentTarget.closest(".p-4");
-                                                const placeholder = cardHeader?.querySelector(
-                                                    ".image-placeholder-fallback"
-                                                ) as HTMLElement | null;
-                                                if (placeholder)
-                                                  placeholder.style.display = "flex";
-                                              }}
+                                              sizes="96px"
+                                              style={{ objectFit: "cover" }}
+                                              className="rounded-md"
                                           />
-                                          <div
-                                              className="image-placeholder-fallback absolute inset-0 flex items-center justify-center bg-muted text-muted-foreground text-xs p-2 text-center"
-                                              style={{ display: "none" }}
-                                          >
-                                            Image not available
+                                      ) : (
+                                          <div className="h-full w-full flex items-center justify-center text-[10px] text-muted-foreground text-center px-1">
+                                            No image
                                           </div>
-                                        </div>
-                                    ) : (
-                                        <div className="aspect-[3/4] w-full mb-2 bg-muted rounded-md flex items-center justify-center text-muted-foreground text-xs p-2 text-center">
-                                          Image not available
-                                        </div>
-                                    )}
-
-                                    <CardTitle className="text-base font-semibold line-clamp-2">
-                                      {info.title || "Untitled"}
-                                    </CardTitle>
-
-                                    {info.authors && info.authors.length > 0 && (
-                                        <CardDescription className="text-xs line-clamp-1">
-                                          By {info.authors.join(", ")}
-                                        </CardDescription>
-                                    )}
-                                  </CardHeader>
-
-                                  <CardContent className="p-4 pt-0 flex-grow">
-                                    <p className="text-xs text-muted-foreground line-clamp-4">
-                                      {info.description || "No description available."}
-                                    </p>
-                                  </CardContent>
-
-                                  <CardFooter className="p-4 pt-0 text-xs text-muted-foreground flex flex-col gap-2">
-                                    {info.pageCount && (
-                                        <span>{info.pageCount} pages</span>
-                                    )}
-
-                                    {(info.publishedDate || info.publisher) && (
-                                        <span className="text-[11px] text-muted-foreground">
-                              {info.publishedDate
-                                  ? info.publishedDate
-                                  : ""}{" "}
-                                          {info.publisher
-                                              ? ` • ${info.publisher}`
-                                              : ""}
-                            </span>
-                                    )}
-
-                                    {/* Remove from shelf button + status */}
-                                    <div className="flex flex-col gap-1">
-                                      <Button
-                                          size="sm"
-                                          variant="outline"
-                                          className="w-full text-xs"
-                                          disabled={isRemoving}
-                                          onClick={() => removeBookFromShelf(vol.id)}
-                                          title="Remove this book from the shelf"
-                                      >
-                                        {isRemoving ? (
-                                            <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                                        ) : null}
-                                        Remove from Shelf
-                                      </Button>
-
-                                      {removeMsg && (
-                                          <span className="text-[11px] text-red-600">
-                                {removeMsg}
-                              </span>
                                       )}
                                     </div>
-                                  </CardFooter>
-                                </Card>
-                            );
-                          })}
-                        </div>
-                    )}
-              </section>
-          )}
+
+                                    <div className="flex min-w-0 flex-1 flex-col">
+                                      <p className="text-sm font-semibold leading-snug line-clamp-2">
+                                        {info.title || "Untitled"}
+                                      </p>
+
+                                      {info.authors && info.authors.length > 0 && (
+                                          <p className="text-[11px] text-muted-foreground leading-snug line-clamp-1">
+                                            {info.authors.join(", ")}
+                                          </p>
+                                      )}
+
+                                      <p className="mt-1 text-[11px] text-muted-foreground leading-snug line-clamp-3">
+                                        {info.description || "No description available."}
+                                      </p>
+
+                                      <div className="mt-2 flex flex-col gap-1 text-[10px] text-muted-foreground leading-snug">
+                                        {info.pageCount && (
+                                            <span>{info.pageCount} pages</span>
+                                        )}
+                                        {(info.publishedDate || info.publisher) && (
+                                            <span>
+                                    {info.publishedDate
+                                        ? info.publishedDate
+                                        : ""}
+                                              {info.publisher
+                                                  ? ` • ${info.publisher}`
+                                                  : ""}
+                                  </span>
+                                        )}
+                                      </div>
+
+                                      <div className="mt-3 flex flex-col gap-1">
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            className="rounded-full text-[11px] font-medium h-8 px-3 w-full justify-center"
+                                            disabled={isRemoving}
+                                            onClick={() => removeBookFromShelf(vol.id)}
+                                        >
+                                          {isRemoving && (
+                                              <Loader2 className="h-3.5 w-3.5 animate-spin mr-2" />
+                                          )}
+                                          Remove from Shelf
+                                        </Button>
+
+                                        {removeMsg && (
+                                            <span className="text-[11px] text-red-600">
+                                    {removeMsg}
+                                  </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                              );
+                            })}
+                          </div>
+                      )}
+                </CardContent>
+              </Card>
+            </section>
+          </div>
         </main>
 
-        {/* FOOTER */}
-        <footer className="text-center mt-12 text-muted-foreground text-sm">
-          Powered by Next.js, Shadcn UI, and Google Books API
+        <footer className="px-4 py-6 text-center text-[11px] text-muted-foreground">
+          Powered by Next.js · shadcn/ui · Google Books API
         </footer>
       </div>
   );
