@@ -19,6 +19,7 @@ class GoogleBooksConnector @Inject()(
   private val apiUrl = appConfig.googleBooksUrl
   private val apiKey = secrets.booksApiKey
 
+
   private val myLibraryBaseUrl = "https://www.googleapis.com/books/v1/mylibrary"
 
   // --- Existing Public Search ---
