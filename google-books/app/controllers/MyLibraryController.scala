@@ -124,4 +124,37 @@ class MyLibraryController @Inject()(
         }
     }
   }
+
+  def removeFromShelf(shelfId: String): Action[JsValue] = Action.async(parse.json) { implicit request =>
+    extractAccessToken(request) match {
+      case Some(googleAccessToken) =>
+        val maybeVolumeId: Option[String] =
+          (request.body \ "volumeId").asOpt[String].filter(_.nonEmpty)
+
+        maybeVolumeId match {
+          case Some(volumeId) =>
+            googleBooksService.removeVolumeFromShelf(googleAccessToken, shelfId, volumeId).map {
+              case Right(_) =>
+                Ok(Json.obj(
+                  "status"   -> "removed",
+                  "shelfId"  -> shelfId,
+                  "volumeId" -> volumeId
+                ))
+
+              case Left(apiError: APIError.BadAPIResponse) =>
+                Status(apiError.httpResponseStatus)(Json.obj("error" -> apiError.reason))
+            }
+
+          case None =>
+            Future.successful(
+              BadRequest(Json.obj("error" -> "Missing or empty 'volumeId' in request body."))
+            )
+        }
+
+      case None =>
+        Future.successful(
+          Unauthorized(Json.obj("error" -> "Missing X-Google-Access-Token header; cannot modify Google Books."))
+        )
+    }
+  }
 }

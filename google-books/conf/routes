@@ -11,6 +11,7 @@ GET     /health                             controllers.HealthController.health
 
 # --- Authentication --------------------------------------------------------
 # Exchange Google OAuth 2.0 authorization_code for tokens
++nocsrf
 POST    /api/auth/google/exchange           controllers.AuthController.exchangeCode()
 
 
@@ -35,8 +36,12 @@ GET     /api/my-library/bookshelves/:shelfId/volumes        controllers.MyLibrar
 
 # Add a book to a specific shelf
 # Body JSON: { "volumeId": "<google volume id>" }
++nocsrf
 POST    /api/my-library/bookshelves/:shelfId/add            controllers.MyLibraryController.addToShelf(shelfId: String)
 
 
+# remove a book
++nocsrf
+POST    /api/my-library/bookshelves/:shelfId/remove          controllers.MyLibraryController.removeFromShelf(shelfId: String)
 # --- Static Assets --------------------------------------------------------
 GET     /assets/*file                        controllers.Assets.versioned(path="/public", file: Asset)

@@ -1,8 +1,8 @@
-'use client';
+"use client";
 
 import Image from "next/image";
 import { useState, FormEvent, useCallback } from "react";
-import { jwtDecode } from "jwt-decode"; // currently unused but kept for debugging / future profile enrichment
+import { jwtDecode } from "jwt-decode"; // kept in case you want to inspect JWTs later
 
 // --- Shadcn UI Imports ---
 import { Button } from "@/components/ui/button";
@@ -53,9 +53,9 @@ interface GoogleCodeClient {
 
 // --- Token response from backend after code exchange ---
 interface BackendTokenResponse {
-  access_token: string;   // Google OAuth access token (used to call Google Books)
-  id_token: string;       // Google ID token (JWT) validated by Kong OIDC
-  user_info: DecodedJwt;  // decoded ID token payload for UI
+  access_token: string; // Google OAuth access token (used to call Google Books)
+  id_token: string; // Google ID token (JWT) validated by Kong OIDC
+  user_info: DecodedJwt; // decoded ID token payload for UI
   expires_in: number;
 }
 
@@ -177,14 +177,16 @@ export default function Home() {
   const [idToken, setIdToken] = useState<string | null>(null);
 
   // --- Shelves and library state ---
-  // All shelves for logged-in user
-  const [libraryShelves, setLibraryShelves] = useState<ShelfInfo[] | null>(null);
+  const [libraryShelves, setLibraryShelves] = useState<ShelfInfo[] | null>(
+      null
+  );
 
   // Active shelf detail view
   const [activeShelfId, setActiveShelfId] = useState<number | null>(null);
   const [activeShelfTitle, setActiveShelfTitle] = useState<string | null>(null);
   const [shelfVolumes, setShelfVolumes] = useState<ShelfVolume[] | null>(null);
-  const [isLoadingShelfVolumes, setIsLoadingShelfVolumes] = useState<boolean>(false);
+  const [isLoadingShelfVolumes, setIsLoadingShelfVolumes] =
+      useState<boolean>(false);
   const [shelfError, setShelfError] = useState<string | null>(null);
 
   // --- UI state for login / errors ---
@@ -193,11 +195,21 @@ export default function Home() {
 
   // --- Add-to-shelf interaction state ---
   // For each book (by googleId), which shelf ID did the user choose?
-  const [addShelfChoice, setAddShelfChoice] = useState<Record<string, string>>({});
-  // Tracks status per book: "Added ✅", "Choose a shelf first", error message, etc.
+  const [addShelfChoice, setAddShelfChoice] = useState<
+      Record<string, string>
+  >({});
+  // Tracks status per book for add: "Added ✅", "Choose a shelf first", error message, etc.
   const [addStatus, setAddStatus] = useState<Record<string, string>>({});
-  // Loading state per book while we POST
+  // Loading state per book while we POST add
   const [addLoading, setAddLoading] = useState<Record<string, boolean>>({});
+
+  // --- Remove-from-shelf interaction state ---
+  // Tracks status per volume ID inside a shelf (success / error)
+  const [removeStatus, setRemoveStatus] = useState<Record<string, string>>({});
+  // Loading state for remove button per volume
+  const [removeLoading, setRemoveLoading] = useState<Record<string, boolean>>(
+      {}
+  );
 
   // --- Env / Config ---
   const apiGatewayUrl =
@@ -206,6 +218,18 @@ export default function Home() {
   const googleClientId =
       process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ||
       "1033367449745-tgkqjo35chh3mqiprqqo8lfup01am8p6.apps.googleusercontent.com";
+
+  // --- Allowed shelves to add to ---
+  // we only expose these in the "Add" dropdown
+  const ALLOWED_SHELVES = ["Reading now", "Favorites", "To read"] as const;
+
+  // Build the dropdown list from whatever shelves the API returned
+  const addableShelves: ShelfInfo[] = (libraryShelves || []).filter((shelf) => {
+    const shelfName = (shelf.title || "").trim().toLowerCase();
+    return ALLOWED_SHELVES.some(
+        (allowed) => allowed.toLowerCase() === shelfName
+    );
+  });
 
   // --- Auth: Google popup -> auth code -> backend exchange ---
   const handleLoginClick = useCallback(() => {
@@ -260,7 +284,7 @@ export default function Home() {
               try {
                 const errJson = await backendResponse.json();
                 errorMsg = errJson.error || errorMsg;
-              } catch (e) {
+              } catch {
                 /* ignore parse error */
               }
               throw new Error(errorMsg);
@@ -275,13 +299,11 @@ export default function Home() {
 
             // Tokens we will use on protected calls
             setAccessToken(tokenData.access_token); // used to call Google Books
-            setIdToken(tokenData.id_token);         // validated by Kong OIDC
-
+            setIdToken(tokenData.id_token); // validated by Kong OIDC
           } catch (exchangeError: any) {
             console.error("Error exchanging code:", exchangeError);
             setAuthError(
-                exchangeError.message ||
-                "Failed to exchange authorization code."
+                exchangeError.message || "Failed to exchange authorization code."
             );
           } finally {
             setIsAuthLoading(false);
@@ -326,6 +348,8 @@ export default function Home() {
     setAddStatus({});
     setAddShelfChoice({});
     setAddLoading({});
+    setRemoveStatus({});
+    setRemoveLoading({});
 
     // Stop Google from auto-selecting this user silently in future
     if (
@@ -364,7 +388,7 @@ export default function Home() {
         try {
           const errorJson = await response.json();
           errorMsg = errorJson.error || errorMsg;
-        } catch (e) {
+        } catch {
           /* ignore parse error */
         }
         throw new Error(errorMsg);
@@ -406,10 +430,8 @@ export default function Home() {
     try {
       const response = await fetch(myLibraryUrl, {
         headers: {
-          // validated by Kong
-          Authorization: `Bearer ${idToken}`,
-          // forwarded to Google by your backend
-          "X-Google-Access-Token": accessToken ?? "",
+          Authorization: `Bearer ${idToken}`, // validated by Kong
+          "X-Google-Access-Token": accessToken ?? "", // forwarded to Google by backend
         },
       });
 
@@ -422,7 +444,7 @@ export default function Home() {
               errJson.message ||
               errJson.error ||
               errorMsg;
-        } catch (e) {
+        } catch {
           /* ignore */
         }
 
@@ -438,7 +460,6 @@ export default function Home() {
       const libraryData = await response.json();
       console.log("My Library Shelves:", libraryData);
 
-      // libraryData should look like { kind: "...", items: [ {id, title, ...}, ... ] }
       if (libraryData && Array.isArray(libraryData.items)) {
         setLibraryShelves(libraryData.items as ShelfInfo[]);
         setSearchError(null);
@@ -454,7 +475,7 @@ export default function Home() {
     }
   };
 
-  // --- Fetch the volumes in a specific shelf ---
+  // --- Fetch the volumes in a specific shelf (user clicks "View Shelf #x") ---
   const fetchShelfVolumes = async (shelfId: number, shelfTitle: string) => {
     if (!accessToken || !idToken) {
       setAuthError("Please log in again.");
@@ -486,7 +507,7 @@ export default function Home() {
               errJson.message ||
               errJson.error ||
               errorMsg;
-        } catch (e) {
+        } catch {
           /* ignore */
         }
 
@@ -502,12 +523,15 @@ export default function Home() {
       const data = await response.json();
       console.log(`Volumes for shelf #${shelfId}:`, data);
 
-      // data should look like { items: [...] }
       if (data && Array.isArray(data.items)) {
         setShelfVolumes(data.items as ShelfVolume[]);
       } else {
         setShelfVolumes([]);
       }
+
+      // clear old remove states on shelf change
+      setRemoveStatus({});
+      setRemoveLoading({});
     } catch (err: any) {
       console.error("Error fetching shelf volumes:", err);
       setShelfError(err.message || "Failed to fetch shelf volumes.");
@@ -516,8 +540,68 @@ export default function Home() {
     }
   };
 
+  // --- Helper: refresh libraryShelves (and active shelf, if open) after add/remove ---
+  const refreshLibraryAfterMutation = async () => {
+    if (!accessToken || !idToken) return;
+
+    // 1. refresh the shelves list silently
+    try {
+      const resp = await fetch(`${apiGatewayUrl}/api/my-library/bookshelves`, {
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+          "X-Google-Access-Token": accessToken ?? "",
+        },
+      });
+
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && Array.isArray(data.items)) {
+          setLibraryShelves(data.items as ShelfInfo[]);
+        } else {
+          setLibraryShelves([]);
+        }
+      } else {
+        if (resp.status === 401 || resp.status === 403) {
+          handleLogout();
+        }
+      }
+    } catch (e) {
+      console.error("refreshLibraryAfterMutation shelves error:", e);
+    }
+
+    // 2. if user is currently viewing a shelf, refresh just that shelf's volumes
+    if (activeShelfId !== null) {
+      try {
+        const shelfResp = await fetch(
+            `${apiGatewayUrl}/api/my-library/bookshelves/${activeShelfId}/volumes`,
+            {
+              headers: {
+                Authorization: `Bearer ${idToken}`,
+                "X-Google-Access-Token": accessToken ?? "",
+              },
+            }
+        );
+
+        if (shelfResp.ok) {
+          const shelfJson = await shelfResp.json();
+          if (shelfJson && Array.isArray(shelfJson.items)) {
+            setShelfVolumes(shelfJson.items as ShelfVolume[]);
+          } else {
+            setShelfVolumes([]);
+          }
+        } else {
+          if (shelfResp.status === 401 || shelfResp.status === 403) {
+            handleLogout();
+          }
+        }
+      } catch (e) {
+        console.error("refreshLibraryAfterMutation shelf error:", e);
+      }
+    }
+  };
+
   // --- Add a book from search results into a chosen shelf ---
-  // This calls your new POST /api/my-library/bookshelves/:shelfId/add
+  // Calls POST /api/my-library/bookshelves/:shelfId/add
   const addBookToShelf = async (bookId: string) => {
     // bookId here is the Google "volumeId" we stored as book.googleId
     if (!accessToken || !idToken) {
@@ -557,7 +641,7 @@ export default function Home() {
         try {
           const errJson = await resp.json();
           msg = errJson.error || msg;
-        } catch (_) {
+        } catch {
           /* ignore parse error */
         }
         if (resp.status === 401 || resp.status === 403) {
@@ -567,21 +651,99 @@ export default function Home() {
         throw new Error(msg);
       }
 
-      // success
       console.log("✅ Added", bookId, "to shelf", chosenShelfId);
+
       setAddStatus((prev) => ({
         ...prev,
         [bookId]: "Added ✅",
       }));
+
+      // refresh shelves + active shelf view
+      await refreshLibraryAfterMutation();
     } catch (err: any) {
       console.error("Error adding to shelf:", err);
       setAddStatus((prev) => ({
         ...prev,
         [bookId]: err.message || "Failed to add book.",
       }));
-      setAuthError((err && err.message) || "Failed to add book to shelf.");
+      setAuthError(err.message || "Failed to add book to shelf.");
     } finally {
       setAddLoading((prev) => ({ ...prev, [bookId]: false }));
+    }
+  };
+
+  // --- Remove a volume from the active shelf ---
+  // Calls POST /api/my-library/bookshelves/:shelfId/remove
+  const removeBookFromShelf = async (volumeId: string | undefined) => {
+    if (!volumeId) {
+      return;
+    }
+    if (!accessToken || !idToken) {
+      setAuthError("Please log in.");
+      return;
+    }
+    if (activeShelfId === null) {
+      setShelfError("No shelf selected.");
+      return;
+    }
+
+    // mark this volume as loading
+    setRemoveLoading((prev) => ({ ...prev, [volumeId]: true }));
+    setRemoveStatus((prev) => ({ ...prev, [volumeId]: "" }));
+
+    try {
+      const resp = await fetch(
+          `${apiGatewayUrl}/api/my-library/bookshelves/${activeShelfId}/remove`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${idToken}`,
+              "X-Google-Access-Token": accessToken ?? "",
+            },
+            body: JSON.stringify({ volumeId }),
+          }
+      );
+
+      if (!resp.ok) {
+        let msg = `Remove failed: ${resp.status} ${resp.statusText}`;
+        try {
+          const errJson = await resp.json();
+          msg = errJson.error || msg;
+        } catch {
+          /* ignore parse error */
+        }
+        if (resp.status === 401 || resp.status === 403) {
+          handleLogout();
+          msg = "Session expired. Please log in again.";
+        }
+        throw new Error(msg);
+      }
+
+      console.log("🗑️ Removed", volumeId, "from shelf", activeShelfId);
+
+      setRemoveStatus((prev) => ({
+        ...prev,
+        [volumeId]: "Removed 🗑️",
+      }));
+
+      // optimistically filter from UI
+      setShelfVolumes((prev) =>
+          prev ? prev.filter((v) => v.id !== volumeId) : prev
+      );
+
+      // ALSO refresh shelves + active shelf view to stay in sync with Google
+      await refreshLibraryAfterMutation();
+    } catch (err: any) {
+      console.error("Error removing from shelf:", err);
+      setRemoveStatus((prev) => ({
+        ...prev,
+        [volumeId]:
+            err.message || "Failed to remove book from this shelf.",
+      }));
+      setShelfError(err.message || "Failed to remove book from this shelf.");
+    } finally {
+      setRemoveLoading((prev) => ({ ...prev, [volumeId]: false }));
     }
   };
 
@@ -591,7 +753,6 @@ export default function Home() {
       ...prev,
       [bookId]: shelfId,
     }));
-    // clear previous message for that card
     setAddStatus((prev) => ({
       ...prev,
       [bookId]: "",
@@ -631,7 +792,9 @@ export default function Home() {
 
                     <div className="text-right">
                       <p className="text-sm font-medium">{user.name}</p>
-                      <p className="text-xs text-muted-foreground">{user.email}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {user.email}
+                      </p>
                     </div>
 
                     {user.picture && (
@@ -654,7 +817,6 @@ export default function Home() {
                     </Button>
                   </div>
 
-                  {/* tiny hint to user that they can add books to shelves */}
                   {libraryShelves && libraryShelves.length > 0 && (
                       <p className="text-[11px] text-muted-foreground text-center sm:text-right leading-tight">
                         Tip: pick a shelf on a book card and click &quot;Add&quot;
@@ -667,10 +829,7 @@ export default function Home() {
 
         {/* AUTH / ACCESS ERRORS */}
         {authError && (
-            <Alert
-                className="w-full max-w-2xl mx-auto mb-4"
-                variant="destructive"
-            >
+            <Alert className="w-full max-w-2xl mx-auto mb-4" variant="destructive">
               <AlertCircle className="h-4 w-4" />
               <AlertTitle>Login / Access Error</AlertTitle>
               <AlertDescription>{authError}</AlertDescription>
@@ -736,7 +895,7 @@ export default function Home() {
               </Alert>
           )}
 
-          {/* INITIAL EMPTY STATE (before shelves loaded, before search, no errors) */}
+          {/* INITIAL EMPTY STATE */}
           {!isLoadingSearch &&
               !searchError &&
               results.length === 0 &&
@@ -832,15 +991,14 @@ export default function Home() {
                           </CardContent>
 
                           <CardFooter className="p-4 pt-0 flex flex-col gap-2 text-xs text-muted-foreground">
-                            {/* page count */}
                             {book.pageCount ? (
                                 <span className="text-[11px]">
                           {book.pageCount} pages
                         </span>
                             ) : null}
 
-                            {/* Add-to-shelf controls (only if logged in AND shelves loaded) */}
-                            {user && libraryShelves && libraryShelves.length > 0 ? (
+                            {/* Add-to-shelf controls (only if logged in AND we have allowed shelves) */}
+                            {user && addableShelves && addableShelves.length > 0 ? (
                                 <div className="w-full flex flex-col gap-2">
                                   <div className="flex flex-row gap-2 items-center">
                                     <Select
@@ -852,18 +1010,25 @@ export default function Home() {
                                       <SelectTrigger className="w-full">
                                         <SelectValue placeholder="Select shelf…" />
                                       </SelectTrigger>
+
                                       <SelectContent>
-                                        {libraryShelves.map((shelf) => (
-                                            <SelectItem
-                                                key={shelf.id}
-                                                value={String(shelf.id)}
-                                            >
-                                              {shelf.title || `Shelf ${shelf.id}`}{" "}
-                                              {typeof shelf.volumeCount === "number"
-                                                  ? `(${shelf.volumeCount})`
-                                                  : ""}
-                                            </SelectItem>
-                                        ))}
+                                        {addableShelves.length === 0 ? (
+                                            <div className="px-3 py-2 text-xs text-muted-foreground">
+                                              No writable shelves found.
+                                            </div>
+                                        ) : (
+                                            addableShelves.map((shelf) => (
+                                                <SelectItem
+                                                    key={shelf.id}
+                                                    value={String(shelf.id)}
+                                                >
+                                                  {shelf.title || `Shelf ${shelf.id}`}{" "}
+                                                  {typeof shelf.volumeCount === "number"
+                                                      ? `(${shelf.volumeCount})`
+                                                      : ""}
+                                                </SelectItem>
+                                            ))
+                                        )}
                                       </SelectContent>
                                     </Select>
 
@@ -898,6 +1063,10 @@ export default function Home() {
                                 <span className="text-[11px] text-muted-foreground">
                           Load &quot;My Library&quot; first to add this.
                         </span>
+                            ) : user && addableShelves.length === 0 ? (
+                                <span className="text-[11px] text-muted-foreground">
+                          No supported target shelves.
+                        </span>
                             ) : null}
                           </CardFooter>
                         </Card>
@@ -911,7 +1080,9 @@ export default function Home() {
           {!isLoadingSearch && libraryShelves && (
               <section className="mb-12">
                 <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between mb-4">
-                  <h2 className="text-xl font-semibold">Your Google Books Shelves</h2>
+                  <h2 className="text-xl font-semibold">
+                    Your Google Books Shelves
+                  </h2>
                   <span className="text-sm text-muted-foreground mt-2 sm:mt-0">
                 {libraryShelves.length} shelf
                     {libraryShelves.length === 1 ? "" : "s"}
@@ -1040,6 +1211,11 @@ export default function Home() {
                                 info.imageLinks?.thumbnail ||
                                 info.imageLinks?.smallThumbnail ||
                                 "";
+                            const volId = vol.id || `vol-${idx}`;
+
+                            const isRemoving = !!removeLoading[volId];
+                            const removeMsg = removeStatus[volId] || "";
+
                             return (
                                 <Card
                                     key={vol.id || `${activeShelfId}-${idx}`}
@@ -1064,14 +1240,13 @@ export default function Home() {
                                               onError={(e) => {
                                                 const parentDiv =
                                                     e.currentTarget.closest("div");
-                                                if (parentDiv) parentDiv.style.display =
-                                                    "none";
+                                                if (parentDiv)
+                                                  parentDiv.style.display = "none";
                                                 const cardHeader =
                                                     e.currentTarget.closest(".p-4");
-                                                const placeholder =
-                                                    cardHeader?.querySelector(
-                                                        ".image-placeholder-fallback"
-                                                    ) as HTMLElement | null;
+                                                const placeholder = cardHeader?.querySelector(
+                                                    ".image-placeholder-fallback"
+                                                ) as HTMLElement | null;
                                                 if (placeholder)
                                                   placeholder.style.display = "flex";
                                               }}
@@ -1106,7 +1281,7 @@ export default function Home() {
                                     </p>
                                   </CardContent>
 
-                                  <CardFooter className="p-4 pt-0 text-xs text-muted-foreground flex flex-col gap-1">
+                                  <CardFooter className="p-4 pt-0 text-xs text-muted-foreground flex flex-col gap-2">
                                     {info.pageCount && (
                                         <span>{info.pageCount} pages</span>
                                     )}
@@ -1121,6 +1296,29 @@ export default function Home() {
                                               : ""}
                             </span>
                                     )}
+
+                                    {/* Remove from shelf button + status */}
+                                    <div className="flex flex-col gap-1">
+                                      <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="w-full text-xs"
+                                          disabled={isRemoving}
+                                          onClick={() => removeBookFromShelf(vol.id)}
+                                          title="Remove this book from the shelf"
+                                      >
+                                        {isRemoving ? (
+                                            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                                        ) : null}
+                                        Remove from Shelf
+                                      </Button>
+
+                                      {removeMsg && (
+                                          <span className="text-[11px] text-red-600">
+                                {removeMsg}
+                              </span>
+                                      )}
+                                    </div>
                                   </CardFooter>
                                 </Card>
                             );

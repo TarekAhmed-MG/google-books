@@ -164,10 +164,16 @@ class GoogleBooksService @Inject()(
         case OK | NO_CONTENT =>
           Right(())
 
-        case UNAUTHORIZED | FORBIDDEN =>
+        case UNAUTHORIZED =>
           Left(APIError.BadAPIResponse(
             response.status,
-            "Token is invalid or expired."
+            "Access token is missing or expired."
+          ))
+
+        case FORBIDDEN =>
+          Left(APIError.BadAPIResponse(
+            response.status,
+            "Google refused to add this book. The shelf may be read-only or the book is already on that shelf."
           ))
 
         case status =>
@@ -184,4 +190,41 @@ class GoogleBooksService @Inject()(
         ))
     }
   }
+
+
+
+  //// REMOVE BOOK SERVICE
+
+  def removeVolumeFromShelf(
+                             accessToken: String,
+                             shelfId: String,
+                             volumeId: String
+                           ): Future[Either[APIError.BadAPIResponse, Unit]] = {
+
+    connector.removeVolumeFromShelf(accessToken, shelfId, volumeId).map { response =>
+      response.status match {
+        case OK | NO_CONTENT =>
+          Right(())
+
+        case UNAUTHORIZED | FORBIDDEN =>
+          Left(APIError.BadAPIResponse(
+            response.status,
+            "Token is invalid or expired."
+          ))
+
+        case status =>
+          val upstreamError =
+            (response.json \ "error" \ "message").asOpt[String]
+              .getOrElse("Error removing volume from shelf.")
+          Left(APIError.BadAPIResponse(status, upstreamError))
+      }
+    }.recover {
+      case e: Exception =>
+        Left(APIError.BadAPIResponse(
+          SERVICE_UNAVAILABLE,
+          s"Could not connect to Google Books Remove Volume API: ${e.getMessage}"
+        ))
+    }
+  }
+
 }
