@@ -51,4 +51,18 @@ class GoogleBooksConnector @Inject()(
   //     .addHttpHeaders("Authorization" -> s"Bearer $accessToken")
   //     .get()
   // }
+
+  def fetchShelfVolumes(accessToken: String, shelfId: String): Future[WSResponse] =
+    ws.url(s"https://www.googleapis.com/books/v1/mylibrary/bookshelves/$shelfId/volumes")
+      .addHttpHeaders("Authorization" -> s"Bearer $accessToken")
+      .withQueryStringParameters("country" -> "GB")
+      .get()
+
+  def addVolumeToShelf(accessToken: String, shelfId: String, volumeId: String): Future[WSResponse] =
+    ws.url(s"https://www.googleapis.com/books/v1/mylibrary/bookshelves/$shelfId/addVolume")
+      .addQueryStringParameters("volumeId" -> volumeId)
+      .addHttpHeaders("Authorization" -> s"Bearer $accessToken")
+      .withQueryStringParameters("country" -> "GB")
+      .post("") // empty body is fine
+
 }
