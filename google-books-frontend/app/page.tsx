@@ -146,6 +146,7 @@ export default function Home() {
           console.log("Received auth code response:", codeResponse);
           if (codeResponse.code) {
             try {
+
               // --- FIX: Use Gateway URL for Auth ---
               const backendResponse = await fetch(`${apiGatewayUrl}/api/auth/google/exchange`, {
                 method: 'POST',
