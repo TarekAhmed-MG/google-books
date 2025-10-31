@@ -28,7 +28,8 @@ class GoogleBooksConnector @Inject()(
         "q" -> query,
         "key" -> apiKey, // This now uses the key from AppConfig
         "maxResults" -> "10",
-        "orderBy" -> "relevance"
+        "orderBy" -> "relevance",
+        "country" -> "GB"
       )
       .get()
   }

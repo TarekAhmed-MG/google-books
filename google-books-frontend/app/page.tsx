@@ -117,6 +117,9 @@ export default function Home() {
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
+  // --- FIX: Define Gateway URL ---
+  const apiGatewayUrl = process.env.NEXT_PUBLIC_API_GATEWAY_URL || 'http://localhost:9000';
+
   const googleClientId = "432449136597-b79cre253mc9pcpfjopv0mr5r22m9mlq.apps.googleusercontent.com"; // Your Client ID
 
   // --- Google Auth Code Client Trigger ---
@@ -143,7 +146,8 @@ export default function Home() {
           console.log("Received auth code response:", codeResponse);
           if (codeResponse.code) {
             try {
-              const backendResponse = await fetch('http://localhost:9000/api/auth/google/exchange', {
+              // --- FIX: Use Gateway URL for Auth ---
+              const backendResponse = await fetch(`${apiGatewayUrl}/api/auth/google/exchange`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ code: codeResponse.code })
@@ -184,7 +188,7 @@ export default function Home() {
       setAuthError("Could not start Google login process.");
       setIsAuthLoading(false);
     }
-  }, []);
+  }, [apiGatewayUrl]); // Add apiGatewayUrl as a dependency
 
 
   // --- Handle Logout ---
@@ -211,7 +215,10 @@ export default function Home() {
     setIsLoadingSearch(true);
     setSearchError(null);
     setResults([]);
-    const apiUrl = `http://localhost:9000/api/books/search?term=${encodeURIComponent(searchType)}&search=${encodeURIComponent(searchTerm)}`;
+
+    // --- FIX: Use Gateway URL for Search ---
+    const apiUrl = `${apiGatewayUrl}/api/books/search?term=${encodeURIComponent(searchType)}&search=${encodeURIComponent(searchTerm)}`;
+
     try {
       const response = await fetch(apiUrl);
       if (!response.ok) {
@@ -243,8 +250,8 @@ export default function Home() {
     setAuthError(null);   // Clear auth errors
     setResults([]);
 
-    // URL points to your Kong Gateway
-    const myLibraryUrl = 'http://localhost:8000/api/my-library/bookshelves';
+    // --- FIX: Use Gateway URL for Protected Route ---
+    const myLibraryUrl = `${apiGatewayUrl}/api/my-library/bookshelves`;
 
     try {
       const response = await fetch(myLibraryUrl, {
