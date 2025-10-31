@@ -19,6 +19,7 @@ class GoogleBooksConnector @Inject()(
   private val apiUrl = appConfig.googleBooksUrl
   private val apiKey = secrets.booksApiKey
 
+
   private val myLibraryBaseUrl = "https://www.googleapis.com/books/v1/mylibrary"
 
   // --- Existing Public Search ---
@@ -51,4 +52,32 @@ class GoogleBooksConnector @Inject()(
   //     .addHttpHeaders("Authorization" -> s"Bearer $accessToken")
   //     .get()
   // }
+
+  def fetchShelfVolumes(accessToken: String, shelfId: String): Future[WSResponse] =
+    ws.url(s"https://www.googleapis.com/books/v1/mylibrary/bookshelves/$shelfId/volumes")
+      .addHttpHeaders("Authorization" -> s"Bearer $accessToken")
+      .withQueryStringParameters("country" -> "GB")
+      .get()
+
+  def addVolumeToShelf(accessToken: String, shelfId: String, volumeId: String): Future[WSResponse] =
+    ws.url(s"https://www.googleapis.com/books/v1/mylibrary/bookshelves/$shelfId/addVolume")
+      .addQueryStringParameters("volumeId" -> volumeId, "country" -> "GB")
+      .addHttpHeaders("Authorization" -> s"Bearer $accessToken")
+      .post("")
+
+  def removeVolumeFromShelf(
+                             accessToken: String,
+                             shelfId: String,
+                             volumeId: String
+                           ): Future[WSResponse] = {
+    ws.url(s"https://www.googleapis.com/books/v1/mylibrary/bookshelves/$shelfId/removeVolume")
+      .addHttpHeaders(
+        "Authorization" -> s"Bearer $accessToken"
+      )
+      .withQueryStringParameters(
+        "volumeId" -> volumeId,
+        "country"  -> "GB"
+      )
+      .post("") // empty body is fine
+  }
 }

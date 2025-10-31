@@ -3,27 +3,45 @@
 # https://www.playframework.com/documentation/latest/ScalaRouting
 # ~~~~
 
-# --- Home Page (Example) ---
-GET     /                           controllers.HomeController.index()
+# --- Root / Health ---------------------------------------------------------
 
-GET   /health   controllers.HealthController.health
-
-
-# --- Authentication ---
-# Handles the Google OAuth 2.0 code exchange
-POST    /api/auth/google/exchange   controllers.AuthController.exchangeCode()
-
-# --- Public Google Books API ---
-# Handles public book searches
-GET     /api/books/search           controllers.GoogleBooksController.getGoogleBook(search: String, term: String)
-
-# --- Protected Google Books User Library API ---
-# Fetches the user's bookshelves (Requires valid Bearer token validated by Kong)
-GET     /api/my-library/bookshelves controllers.MyLibraryController.getBookshelves()
-# Add more routes here if needed, e.g., for specific shelves:
-# GET /api/my-library/bookshelves/:shelfId/volumes controllers.MyLibraryController.getVolumesOnShelf(shelfId: String)
+GET     /                                   controllers.HomeController.index()
+GET     /health                             controllers.HealthController.health
 
 
-# --- Static Assets ---
-# Map static resources from the /public folder to the /assets URL path
-GET     /assets/*file               controllers.Assets.versioned(path="/public", file: Asset)
+# --- Authentication --------------------------------------------------------
+# Exchange Google OAuth 2.0 authorization_code for tokens
++nocsrf
+POST    /api/auth/google/exchange           controllers.AuthController.exchangeCode()
+
+
+# --- Public Google Books Search -------------------------------------------
+# Proxy for public Google Books search
+# Query params:
+#   ?search=<term or query text>
+#   &term=<general|intitle|inauthor>
+GET     /api/books/search                   controllers.GoogleBooksController.getGoogleBook(search: String, term: String)
+
+
+# --- Protected Google Books User Library ----------------------------------
+# These require:
+#   Authorization: Bearer <ID_TOKEN>          (validated by Kong OIDC plugin)
+#   X-Google-Access-Token: <ACCESS_TOKEN>     (forwarded by us to Google Books)
+
+# Get ALL shelves from the user's Google Books library
+GET     /api/my-library/bookshelves                         controllers.MyLibraryController.getBookshelves()
+
+# Get all volumes (books) currently on a specific shelf
+GET     /api/my-library/bookshelves/:shelfId/volumes        controllers.MyLibraryController.getShelfVolumes(shelfId: String)
+
+# Add a book to a specific shelf
+# Body JSON: { "volumeId": "<google volume id>" }
++nocsrf
+POST    /api/my-library/bookshelves/:shelfId/add            controllers.MyLibraryController.addToShelf(shelfId: String)
+
+
+# remove a book
++nocsrf
+POST    /api/my-library/bookshelves/:shelfId/remove          controllers.MyLibraryController.removeFromShelf(shelfId: String)
+# --- Static Assets --------------------------------------------------------
+GET     /assets/*file                        controllers.Assets.versioned(path="/public", file: Asset)
