@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: google-books-backend
+  namespace: google-books-prod
+  labels:
+    app: google-books-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: google-books-backend
+  template:
+    metadata:
+      labels:
+        app: google-books-backend
+    spec:
+      serviceAccountName: google-books-ksa
+      containers:
+        - name: google-books-backend
+          image: us-central1-docker.pkg.dev/tutorial-476713/google-books/google-books-backend:1.0.1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 9000
+          env:
+            - name: PLAY_HTTP_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: play-secret-key
+                  key: secret
+            - name: JAVA_TOOL_OPTIONS
+              value: >-
+                -Dhttp.port=9000
+                -Dplay.server.http.address=0.0.0.0
+                -Dplay.http.secret.key=$(PLAY_HTTP_SECRET_KEY)
+                -Dplay.server.pidfile.path=/dev/null
+                -Dplay.http.session.jwt.enabled=false
+          readinessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1024Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: google-books-service
+  namespace: google-books-prod
+  labels:
+    app: google-books-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: google-books-backend
+  ports:
+    - name: http
+      port: 9000
+      targetPort: 9000
+      protocol: TCP

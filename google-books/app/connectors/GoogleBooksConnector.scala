@@ -1,32 +1,36 @@
 package connectors
 
+import config.AppConfig
 import play.api.Configuration
 import play.api.libs.ws.{WSClient, WSResponse}
+import services.AppSecrets
+
 import javax.inject.{Inject, Singleton}
 import scala.concurrent.{ExecutionContext, Future}
 
 @Singleton
 class GoogleBooksConnector @Inject()(
                                       ws: WSClient,
-                                      config: Configuration
+                                      appConfig: AppConfig,
+                                      config: Configuration,
+                                      secrets: AppSecrets
                                     )(implicit ec: ExecutionContext) {
 
-  private val apiUrl = config.get[String]("google.books.url") //
-  private val apiKey = config.get[String]("google.books.apiKey") //
+  private val apiUrl = appConfig.googleBooksUrl
+  private val apiKey = secrets.booksApiKey
 
-  // Base URL for authenticated calls might be different or use the same + /mylibrary path
-  private val myLibraryBaseUrl = "https://www.googleapis.com/books/v1/mylibrary" // Adjust if needed
+  private val myLibraryBaseUrl = "https://www.googleapis.com/books/v1/mylibrary"
 
   // --- Existing Public Search ---
-  def searchBooks(query: String): Future[WSResponse] = { //
+  def searchBooks(query: String): Future[WSResponse] = {
     ws.url(apiUrl)
       .withQueryStringParameters(
         "q" -> query,
-        "key" -> apiKey,
+        "key" -> apiKey, // This now uses the key from AppConfig
         "maxResults" -> "10",
         "orderBy" -> "relevance"
       )
-      .get() //
+      .get()
   }
 
   // --- NEW Authenticated call for bookshelves ---

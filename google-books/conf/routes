@@ -6,6 +6,9 @@
 # --- Home Page (Example) ---
 GET     /                           controllers.HomeController.index()
 
+GET   /health   controllers.HealthController.health
+
+
 # --- Authentication ---
 # Handles the Google OAuth 2.0 code exchange
 POST    /api/auth/google/exchange   controllers.AuthController.exchangeCode()

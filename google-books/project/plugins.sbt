@@ -1,4 +1,11 @@
-resolvers += "Typesafe Releases" at "https://repo.typesafe.com/typesafe/releases/"
+// Play 3 plugin (keep your version)
 addSbtPlugin("org.playframework" % "sbt-plugin" % "3.0.9")
-addSbtPlugin("org.foundweekends.giter8" % "sbt-giter8-scaffold" % "0.18.0")
-addSbtPlugin("com.heroku" % "sbt-heroku" % "2.1.4")
+
+// Use the current native-packager (1.11.1 as of now)
+addSbtPlugin("com.github.sbt" % "sbt-native-packager" % "1.11.1")
+
+// Make sure the SBT plugin repo is explicitly available
+resolvers += "Sbt Plugin Releases" at "https://repo.scala-sbt.org/scalasbt/sbt-plugin-releases"
+
+// (Remove legacy resolvers like Typesafe Releases here)
+

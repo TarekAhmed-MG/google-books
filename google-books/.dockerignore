@@ -1,0 +1,9 @@
+.git
+target
+.project
+.idea
+.metals
+.bsp
+.sbt
+.ivy2
+.coursier

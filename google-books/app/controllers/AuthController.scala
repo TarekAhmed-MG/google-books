@@ -1,5 +1,7 @@
 package controllers
 
+import config.AppConfig
+
 import javax.inject._
 import play.api._
 import play.api.mvc._
@@ -31,13 +33,15 @@ object UserInfo {
 class AuthController @Inject()(
                                 val controllerComponents: ControllerComponents,
                                 ws: WSClient,
+                                appConfig: AppConfig,
+                                secrets: services.AppSecrets,
                                 config: Configuration
                               )(implicit ec: ExecutionContext) extends BaseController {
 
-  private val clientId = config.get[String]("google.auth.clientId")
-  private val clientSecret = config.get[String]("google.auth.clientSecret")
-  private val redirectUri = config.get[String]("google.auth.redirectUri")
-  private val tokenUri = config.get[String]("google.auth.tokenUri")
+  private val clientId = appConfig.googleClientId
+  private val clientSecret = secrets.oauthSecret
+  private val redirectUri = appConfig.googleRedirectUri
+  private val tokenUri = appConfig.googleTokenUri
 
   // Helper to decode Base64 URL encoded string
   private def base64UrlDecode(encoded: String): Try[String] = Try {
