@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useState, FormEvent, useCallback } from "react";
-import { jwtDecode } from 'jwt-decode'; // currently not used directly, but keeping it imported
+import { jwtDecode } from "jwt-decode"; // kept in case you want to decode tokens client-side later
 
 // --- Shadcn UI Imports ---
 import { Button } from "@/components/ui/button";
@@ -25,22 +25,42 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2, AlertCircle, LogOut, LogIn } from "lucide-react";
 
-// --- Google Types ---
+// --- Types for Google OAuth Flow ---
 interface GoogleCredentialResponse {
   credential?: string;
   select_by?: string;
 }
 
-// Interface for the token response we expect from our backend exchange
-interface BackendTokenResponse {
-  access_token: string;     // opaque Google access token -> used for Google Books API
-  id_token: string;         // signed Google ID token (JWT) -> used for Kong validation
-  user_info: DecodedJwt;    // decoded ID token payload for display
-  expires_in: number;
-  // refresh_token?: string; // (optional, if you later handle refresh securely)
+interface GoogleCodeResponse {
+  code: string;
+  scope: string;
+  authuser: string;
+  prompt: string;
+  state?: string;
 }
 
-// Shape of the decoded Google ID token payload
+interface GoogleErrorResponse {
+  type: string;
+  error?: string;
+  error_description?: string;
+  error_uri?: string;
+  state?: string;
+}
+
+interface GoogleCodeClient {
+  requestCode: () => void;
+}
+
+// --- Token response from backend after code exchange ---
+interface BackendTokenResponse {
+  access_token: string;   // Opaque Google access token (use to call Google Books API)
+  id_token: string;       // Google ID token (JWT, used for Kong OIDC validation)
+  user_info: DecodedJwt;  // Decoded ID token payload for display
+  expires_in: number;
+  // refresh_token?: string; // future enhancement if you handle refresh
+}
+
+// --- Decoded Google ID token payload ---
 interface DecodedJwt {
   iss: string;
   azp: string;
@@ -58,7 +78,7 @@ interface DecodedJwt {
   jti: string;
 }
 
-// --- Book Summary Interface ---
+// --- Book Summary interface for search results ---
 interface BookSummary {
   googleId: string;
   title: string;
@@ -68,7 +88,7 @@ interface BookSummary {
   thumbnailLink?: string;
 }
 
-// --- Global Google OAuth Types ---
+// --- Global declaration for Google's OAuth client on window ---
 declare global {
   interface Window {
     google?: {
@@ -113,26 +133,6 @@ declare global {
   }
 }
 
-interface GoogleCodeResponse {
-  code: string;
-  scope: string;
-  authuser: string;
-  prompt: string;
-  state?: string;
-}
-
-interface GoogleErrorResponse {
-  type: string;
-  error?: string;
-  error_description?: string;
-  error_uri?: string;
-  state?: string;
-}
-
-interface GoogleCodeClient {
-  requestCode: () => void;
-}
-
 // --- Component ---
 export default function Home() {
   // --- Search State ---
@@ -145,17 +145,20 @@ export default function Home() {
   // --- Auth / Session State ---
   const [user, setUser] = useState<DecodedJwt | null>(null);
 
-  // Opaque Google access token (used to call Google Books API on user's behalf)
+  // accessToken: Google OAuth access token you use to call Google Books on behalf of the user
   const [accessToken, setAccessToken] = useState<string | null>(null);
 
-  // ID token (JWT) from Google, used for Kong's openid-connect plugin validation
+  // idToken: Google ID token (JWT) used purely so Kong's OIDC plugin will accept the request
   const [idToken, setIdToken] = useState<string | null>(null);
 
-  // UI state for auth flow
+  // libraryShelves: data from GET /mylibrary/bookshelves via backend
+  const [libraryShelves, setLibraryShelves] = useState<any[] | null>(null);
+
+  // --- Auth flow UX state ---
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // --- API Gateway URL + Client ID ---
+  // --- Env / Config ---
   const apiGatewayUrl =
       process.env.NEXT_PUBLIC_API_GATEWAY_URL || "http://104.154.223.55";
 
@@ -163,7 +166,7 @@ export default function Home() {
       process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ||
       "1033367449745-tgkqjo35chh3mqiprqqo8lfup01am8p6.apps.googleusercontent.com";
 
-  // --- Google Auth Code Client Trigger ---
+  // --- Login flow: popup -> code -> exchange via backend ---
   const handleLoginClick = useCallback(() => {
     if (
         !window.google ||
@@ -193,53 +196,54 @@ export default function Home() {
         callback: async (codeResponse) => {
           console.log("Received auth code response:", codeResponse);
 
-          if (codeResponse.code) {
-            try {
-              // Exchange the auth code for tokens via our backend (through Kong)
-              const backendResponse = await fetch(
-                  `${apiGatewayUrl}/api/auth/google/exchange`,
-                  {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ code: codeResponse.code }),
-                  }
-              );
-
-              if (!backendResponse.ok) {
-                let errorMsg = `Code exchange failed: ${backendResponse.statusText}`;
-                try {
-                  const errJson = await backendResponse.json();
-                  errorMsg = errJson.error || errorMsg;
-                } catch (e) {
-                  /* ignore JSON parse err */
-                }
-                throw new Error(errorMsg);
-              }
-
-              const tokenData: BackendTokenResponse =
-                  await backendResponse.json();
-              console.log("Received tokens from backend:", tokenData);
-
-              // For display (UI)
-              setUser(tokenData.user_info);
-
-              // For calling Google Books later from backend
-              setAccessToken(tokenData.access_token);
-
-              // For Kong to validate at the gateway (OIDC plugin)
-              setIdToken(tokenData.id_token);
-            } catch (exchangeError: any) {
-              console.error("Error exchanging code:", exchangeError);
-              setAuthError(
-                  exchangeError.message ||
-                  "Failed to exchange authorization code."
-              );
-            } finally {
-              setIsAuthLoading(false);
-            }
-          } else {
+          if (!codeResponse.code) {
             console.error("No authorization code received from Google.");
             setAuthError("Login failed: No authorization code received.");
+            setIsAuthLoading(false);
+            return;
+          }
+
+          try {
+            // Send auth code to backend (through Kong) to exchange for tokens
+            const backendResponse = await fetch(
+                `${apiGatewayUrl}/api/auth/google/exchange`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ code: codeResponse.code }),
+                }
+            );
+
+            if (!backendResponse.ok) {
+              let errorMsg = `Code exchange failed: ${backendResponse.statusText}`;
+              try {
+                const errJson = await backendResponse.json();
+                errorMsg = errJson.error || errorMsg;
+              } catch (e) {
+                /* ignore parse error */
+              }
+              throw new Error(errorMsg);
+            }
+
+            const tokenData: BackendTokenResponse =
+                await backendResponse.json();
+            console.log("Received tokens from backend:", tokenData);
+
+            // For UI
+            setUser(tokenData.user_info);
+
+            // For backend -> Google Books calls
+            setAccessToken(tokenData.access_token);
+
+            // For Kong OIDC validation at the gateway
+            setIdToken(tokenData.id_token);
+          } catch (exchangeError: any) {
+            console.error("Error exchanging code:", exchangeError);
+            setAuthError(
+                exchangeError.message ||
+                "Failed to exchange authorization code."
+            );
+          } finally {
             setIsAuthLoading(false);
           }
         },
@@ -262,16 +266,17 @@ export default function Home() {
     }
   }, [apiGatewayUrl, googleClientId]);
 
-  // --- Handle Logout ---
+  // --- Logout: clear session, optionally revoke token with Google ---
   const handleLogout = () => {
     const tokenToRevoke = accessToken; // capture before clearing
 
     setUser(null);
     setAccessToken(null);
     setIdToken(null);
+    setLibraryShelves(null);
     setAuthError(null);
 
-    // Clean up Google "remember me"
+    // Stop auto-selecting this account in future Google One Tap / GSI
     if (
         window.google &&
         window.google.accounts &&
@@ -280,7 +285,7 @@ export default function Home() {
       window.google.accounts.id.disableAutoSelect();
     }
 
-    // Optionally revoke access token at Google
+    // Optional revoke of access token at Google
     if (tokenToRevoke && window.google?.accounts?.oauth2?.revoke) {
       window.google.accounts.oauth2.revoke(tokenToRevoke, () => {
         console.log("Google Access Token revoked.");
@@ -290,12 +295,13 @@ export default function Home() {
     console.log("User logged out");
   };
 
-  // --- Handle Book Search (public-ish route through Kong) ---
+  // --- Book Search (public-ish / no auth headers) ---
   const handleSearch = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setIsLoadingSearch(true);
     setSearchError(null);
     setResults([]);
+    // when starting a search, we aren't clearing shelves; shelves belongs to auth
 
     const apiUrl = `${apiGatewayUrl}/api/books/search?term=${encodeURIComponent(
         searchType
@@ -328,11 +334,11 @@ export default function Home() {
     }
   };
 
-  // --- Fetch My Library (protected route through Kong OIDC) ---
+  // --- Fetch My Library Shelves (protected via Kong OIDC) ---
   const fetchMyLibrary = async () => {
-    // We now require BOTH:
-    // - idToken: proves identity to Kong (Kong validates it with openid-connect)
-    // - accessToken: lets backend call Google Books
+    // We require BOTH:
+    // - idToken: JWT that Kong's openid-connect plugin will verify
+    // - accessToken: opaque Google OAuth access token for calling Google Books from backend
     if (!accessToken || !idToken) {
       setAuthError("Please log in to view your library.");
       return;
@@ -341,17 +347,16 @@ export default function Home() {
     setIsLoadingSearch(true);
     setSearchError(null);
     setAuthError(null);
-    setResults([]);
 
     const myLibraryUrl = `${apiGatewayUrl}/api/my-library/bookshelves`;
 
     try {
       const response = await fetch(myLibraryUrl, {
         headers: {
-          // Kong openid-connect plugin validates THIS (ID token, JWT)
+          // Kong OIDC plugin validates THIS
           Authorization: `Bearer ${idToken}`,
 
-          // Backend uses THIS to call Google Books on behalf of the user
+          // Backend uses THIS to call Google Books API on behalf of the user
           "X-Google-Access-Token": accessToken ?? "",
         },
       });
@@ -373,7 +378,7 @@ export default function Home() {
         if (response.status === 401 || response.status === 403) {
           // 401/403 here means:
           // - Kong rejected the id_token (expired / invalid), OR
-          // - backend rejected because Google access token was bad.
+          // - backend couldn't use accessToken (Google said token expired)
           errorMsg =
               "Authentication failed or token invalid/expired. Please log in again.";
           handleLogout();
@@ -385,10 +390,15 @@ export default function Home() {
       const libraryData = await response.json();
       console.log("My Library Data:", libraryData);
 
-      // TODO: Replace this with actual rendering of libraryData in UI
-      setSearchError(
-          "Successfully fetched library data (check console). Display logic needed."
-      );
+      // Google Books API for /mylibrary/bookshelves returns:
+      // { kind: "...", items: [ { id, title, volumeCount, ... }, ... ] }
+      if (libraryData && Array.isArray(libraryData.items)) {
+        setLibraryShelves(libraryData.items);
+        setSearchError(null);
+      } else {
+        setLibraryShelves([]);
+        setSearchError("No shelves found in your library.");
+      }
     } catch (err: any) {
       console.error("Error fetching library:", err);
       setAuthError(err.message || "Failed to fetch library.");
@@ -400,10 +410,10 @@ export default function Home() {
   // --- Render ---
   return (
       <div className="container mx-auto font-sans p-4 sm:p-8 min-h-screen flex flex-col">
+        {/* HEADER / AUTH BAR */}
         <header className="text-center my-8 flex flex-col sm:flex-row justify-between items-center gap-4">
           <h1 className="text-3xl font-bold">Google Books Search</h1>
 
-          {/* --- Auth Section --- */}
           <div className="auth-section">
             {!user && (
                 <Button onClick={handleLoginClick} disabled={isAuthLoading}>
@@ -455,16 +465,19 @@ export default function Home() {
           </div>
         </header>
 
-        {/* Display Auth / Access Errors */}
+        {/* AUTH / ACCESS ERRORS */}
         {authError && (
-            <Alert className="w-full max-w-2xl mx-auto mb-4" variant="destructive">
+            <Alert
+                className="w-full max-w-2xl mx-auto mb-4"
+                variant="destructive"
+            >
               <AlertCircle className="h-4 w-4" />
-              <AlertTitle>Login/Access Error</AlertTitle>
+              <AlertTitle>Login / Access Error</AlertTitle>
               <AlertDescription>{authError}</AlertDescription>
             </Alert>
         )}
 
-        {/* --- Search Form --- */}
+        {/* SEARCH FORM */}
         <form
             onSubmit={handleSearch}
             className="flex flex-col sm:flex-row gap-2 w-full max-w-2xl mx-auto items-center mb-8"
@@ -501,9 +514,9 @@ export default function Home() {
           </Button>
         </form>
 
-        {/* --- Main Content Area --- */}
+        {/* MAIN CONTENT */}
         <main className="flex-grow w-full max-w-5xl mx-auto">
-          {/* Loading Indicator */}
+          {/* GLOBAL BUSY SPINNER */}
           {isLoadingSearch && (
               <div className="flex justify-center items-center mt-10">
                 <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -511,23 +524,24 @@ export default function Home() {
               </div>
           )}
 
-          {/* Search / Library Notice */}
+          {/* ERRORS / NOTICES */}
           {searchError && !isLoadingSearch && (
               <Alert
                   variant="destructive"
                   className="w-full max-w-2xl mx-auto mt-4"
               >
                 <AlertCircle className="h-4 w-4" />
-                <AlertTitle>Search Notice</AlertTitle>
+                <AlertTitle>Notice</AlertTitle>
                 <AlertDescription>{searchError}</AlertDescription>
               </Alert>
           )}
 
-          {/* Initial / No Results Message */}
+          {/* INITIAL EMPTY STATE */}
           {!isLoadingSearch &&
               !searchError &&
               results.length === 0 &&
-              !authError && (
+              !authError &&
+              !libraryShelves && (
                   <p className="text-center text-muted-foreground mt-10">
                     {searchTerm && !isLoadingSearch
                         ? "No books found."
@@ -535,78 +549,170 @@ export default function Home() {
                   </p>
               )}
 
-          {/* Search Results Grid */}
+          {/* SEARCH RESULTS GRID */}
           {!isLoadingSearch && !searchError && results.length > 0 && (
-              <div className="w-full grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                {results.map((book) => (
-                    <Card key={book.googleId} className="flex flex-col overflow-hidden">
-                      <CardHeader className="p-4">
-                        {book.thumbnailLink ? (
-                            <div className="relative aspect-[3/4] w-full mb-2 bg-muted rounded-md overflow-hidden">
-                              <Image
-                                  src={book.thumbnailLink.replace(/^http:/, "https:")}
-                                  alt={`Cover of ${book.title}`}
-                                  fill
-                                  sizes="(max-width: 640px) 90vw, (max-width: 768px) 45vw, (max-width: 1024px) 30vw, 23vw"
-                                  style={{ objectFit: "contain" }}
-                                  className="transition-opacity opacity-0 duration-500"
-                                  onLoadingComplete={(image) =>
-                                      image.classList.remove("opacity-0")
-                                  }
-                                  unoptimized={book.thumbnailLink.includes(
-                                      "googleusercontent.com"
-                                  )}
-                                  onError={(e) => {
-                                    const parentDiv = e.currentTarget.closest("div");
-                                    if (parentDiv) parentDiv.style.display = "none";
-                                    const cardHeader =
-                                        e.currentTarget.closest(".p-4");
-                                    const placeholder = cardHeader?.querySelector(
-                                        ".image-placeholder-fallback"
-                                    ) as HTMLElement | null;
-                                    if (placeholder) placeholder.style.display = "flex";
-                                  }}
-                              />
-                              <div
-                                  className="image-placeholder-fallback absolute inset-0 flex items-center justify-center bg-muted text-muted-foreground text-xs p-2 text-center"
-                                  style={{ display: "none" }}
-                              >
+              <section>
+                <h2 className="text-xl font-semibold mb-4 flex items-center justify-between">
+                  <span>Search Results</span>
+                  <span className="text-sm text-muted-foreground">
+                {results.length} result{results.length === 1 ? "" : "s"}
+              </span>
+                </h2>
+
+                <div className="w-full grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {results.map((book) => (
+                      <Card
+                          key={book.googleId}
+                          className="flex flex-col overflow-hidden"
+                      >
+                        <CardHeader className="p-4">
+                          {book.thumbnailLink ? (
+                              <div className="relative aspect-[3/4] w-full mb-2 bg-muted rounded-md overflow-hidden">
+                                <Image
+                                    src={book.thumbnailLink.replace(/^http:/, "https:")}
+                                    alt={`Cover of ${book.title}`}
+                                    fill
+                                    sizes="(max-width: 640px) 90vw, (max-width: 768px) 45vw, (max-width: 1024px) 30vw, 23vw"
+                                    style={{ objectFit: "contain" }}
+                                    className="transition-opacity opacity-0 duration-500"
+                                    onLoadingComplete={(image) =>
+                                        image.classList.remove("opacity-0")
+                                    }
+                                    unoptimized={book.thumbnailLink.includes(
+                                        "googleusercontent.com"
+                                    )}
+                                    onError={(e) => {
+                                      const parentDiv =
+                                          e.currentTarget.closest("div");
+                                      if (parentDiv) parentDiv.style.display = "none";
+
+                                      const cardHeader =
+                                          e.currentTarget.closest(".p-4");
+                                      const placeholder = cardHeader?.querySelector(
+                                          ".image-placeholder-fallback"
+                                      ) as HTMLElement | null;
+                                      if (placeholder)
+                                        placeholder.style.display = "flex";
+                                    }}
+                                />
+                                <div
+                                    className="image-placeholder-fallback absolute inset-0 flex items-center justify-center bg-muted text-muted-foreground text-xs p-2 text-center"
+                                    style={{ display: "none" }}
+                                >
+                                  Image not available
+                                </div>
+                              </div>
+                          ) : (
+                              <div className="aspect-[3/4] w-full mb-2 bg-muted rounded-md flex items-center justify-center text-muted-foreground text-xs p-2 text-center">
                                 Image not available
                               </div>
-                            </div>
-                        ) : (
-                            <div className="aspect-[3/4] w-full mb-2 bg-muted rounded-md flex items-center justify-center text-muted-foreground text-xs p-2 text-center">
-                              Image not available
-                            </div>
-                        )}
+                          )}
 
-                        <CardTitle className="text-base font-semibold line-clamp-2">
-                          {book.title}
-                        </CardTitle>
+                          <CardTitle className="text-base font-semibold line-clamp-2">
+                            {book.title}
+                          </CardTitle>
 
-                        {book.authors && (
-                            <CardDescription className="text-xs line-clamp-1">
-                              By {book.authors.join(", ")}
-                            </CardDescription>
-                        )}
-                      </CardHeader>
+                          {book.authors && (
+                              <CardDescription className="text-xs line-clamp-1">
+                                By {book.authors.join(", ")}
+                              </CardDescription>
+                          )}
+                        </CardHeader>
 
-                      <CardContent className="p-4 pt-0 flex-grow">
-                        <p className="text-xs text-muted-foreground line-clamp-4">
-                          {book.description || "No description available."}
-                        </p>
-                      </CardContent>
+                        <CardContent className="p-4 pt-0 flex-grow">
+                          <p className="text-xs text-muted-foreground line-clamp-4">
+                            {book.description || "No description available."}
+                          </p>
+                        </CardContent>
 
-                      <CardFooter className="p-4 pt-0 text-xs text-muted-foreground">
-                        {book.pageCount ? `${book.pageCount} pages` : ""}
-                      </CardFooter>
-                    </Card>
-                ))}
-              </div>
+                        <CardFooter className="p-4 pt-0 text-xs text-muted-foreground">
+                          {book.pageCount ? `${book.pageCount} pages` : ""}
+                        </CardFooter>
+                      </Card>
+                  ))}
+                </div>
+              </section>
+          )}
+
+          {/* USER'S SHELVES GRID (AFTER "View My Library") */}
+          {!isLoadingSearch && libraryShelves && (
+              <section className="mt-12">
+                <h2 className="text-xl font-semibold mb-4 flex items-center justify-between">
+                  <span>Your Google Books Shelves</span>
+                  <span className="text-sm text-muted-foreground">
+                {libraryShelves.length} shelf
+                    {libraryShelves.length === 1 ? "" : "s"}
+              </span>
+                </h2>
+
+                {libraryShelves.length === 0 ? (
+                    <p className="text-sm text-muted-foreground text-center">
+                      You don't have any shelves yet.
+                    </p>
+                ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {libraryShelves.map((shelf: any) => (
+                          <Card key={shelf.id} className="flex flex-col">
+                            <CardHeader className="p-4 pb-2">
+                              <CardTitle className="text-base font-semibold line-clamp-1">
+                                {shelf.title || "Untitled Shelf"}
+                              </CardTitle>
+
+                              <CardDescription className="text-xs text-muted-foreground flex flex-col">
+                                {shelf.volumeCount != null && (
+                                    <span>
+                            {shelf.volumeCount} book
+                                      {shelf.volumeCount === 1 ? "" : "s"}
+                          </span>
+                                )}
+
+                                {shelf.access && (
+                                    <span className="uppercase tracking-wide text-[10px] text-muted-foreground/70">
+                            {shelf.access}
+                          </span>
+                                )}
+                              </CardDescription>
+                            </CardHeader>
+
+                            <CardContent className="p-4 pt-0 text-xs text-muted-foreground flex flex-col gap-1">
+                              {shelf.updated && (
+                                  <p>
+                          <span className="font-medium text-foreground">
+                            Updated:
+                          </span>{" "}
+                                    {shelf.updated}
+                                  </p>
+                              )}
+
+                              {shelf.volumesLastUpdated && (
+                                  <p>
+                          <span className="font-medium text-foreground">
+                            Volumes last updated:
+                          </span>{" "}
+                                    {shelf.volumesLastUpdated}
+                                  </p>
+                              )}
+                            </CardContent>
+
+                            <CardFooter className="p-4 pt-0">
+                              <Button
+                                  variant="outline"
+                                  className="w-full text-xs"
+                                  disabled
+                                  title="TODO: Fetch volumes on this shelf next"
+                              >
+                                View Shelf #{shelf.id}
+                              </Button>
+                            </CardFooter>
+                          </Card>
+                      ))}
+                    </div>
+                )}
+              </section>
           )}
         </main>
 
-        {/* --- Footer --- */}
+        {/* FOOTER */}
         <footer className="text-center mt-12 text-muted-foreground text-sm">
           Powered by Next.js, Shadcn UI, and Google Books API
         </footer>
