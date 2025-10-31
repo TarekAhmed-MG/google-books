@@ -1,8 +1,8 @@
 'use client';
 
 import Image from "next/image";
-import { useState, FormEvent, useEffect, useRef, useCallback } from "react";
-import { jwtDecode } from 'jwt-decode';
+import { useState, FormEvent, useCallback } from "react";
+import { jwtDecode } from 'jwt-decode'; // currently not used directly, but keeping it imported
 
 // --- Shadcn UI Imports ---
 import { Button } from "@/components/ui/button";
@@ -26,63 +26,93 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2, AlertCircle, LogOut, LogIn } from "lucide-react";
 
 // --- Google Types ---
-interface GoogleCredentialResponse { // From GSI Button (ID Token only) - kept for reference
+interface GoogleCredentialResponse {
   credential?: string;
   select_by?: string;
 }
 
 // Interface for the token response we expect from our backend exchange
 interface BackendTokenResponse {
-  access_token: string;
-  id_token: string; // The original ID token JWT
-  user_info: DecodedJwt; // Decoded ID token payload
+  access_token: string;     // opaque Google access token -> used for Google Books API
+  id_token: string;         // signed Google ID token (JWT) -> used for Kong validation
+  user_info: DecodedJwt;    // decoded ID token payload for display
   expires_in: number;
-  // Potentially refresh_token if backend sends it (handle securely!)
+  // refresh_token?: string; // (optional, if you later handle refresh securely)
 }
 
-// Keep DecodedJwt interface
+// Shape of the decoded Google ID token payload
 interface DecodedJwt {
-  iss: string; azp: string; aud: string; sub: string; email: string;
-  email_verified: boolean; nbf: number; name: string; picture: string;
-  given_name: string; family_name: string; iat: number; exp: number; jti: string;
+  iss: string;
+  azp: string;
+  aud: string;
+  sub: string;
+  email: string;
+  email_verified: boolean;
+  nbf: number;
+  name: string;
+  picture: string;
+  given_name: string;
+  family_name: string;
+  iat: number;
+  exp: number;
+  jti: string;
 }
 
 // --- Book Summary Interface ---
 interface BookSummary {
-  googleId: string; title: string; authors?: string[]; description?: string;
-  pageCount?: number; thumbnailLink?: string;
+  googleId: string;
+  title: string;
+  authors?: string[];
+  description?: string;
+  pageCount?: number;
+  thumbnailLink?: string;
 }
 
-// --- Global Type Declaration ---
+// --- Global Google OAuth Types ---
 declare global {
   interface Window {
     google?: {
       accounts: {
-        id: { // Keep ID methods if using GSI button elsewhere or for future use
-          initialize: (config: { client_id: string; callback: (response: GoogleCredentialResponse) => void; ux_mode?: string }) => void;
-          renderButton: (parent: HTMLElement, options: { theme?: string; size?: string; type?: string; shape?: string; text?: string; width?: string; logo_alignment?: string }) => void;
+        id: {
+          initialize: (config: {
+            client_id: string;
+            callback: (response: GoogleCredentialResponse) => void;
+            ux_mode?: string;
+          }) => void;
+          renderButton: (
+              parent: HTMLElement,
+              options: {
+                theme?: string;
+                size?: string;
+                type?: string;
+                shape?: string;
+                text?: string;
+                width?: string;
+                logo_alignment?: string;
+              }
+          ) => void;
           prompt: (momentListener?: (notification: any) => void) => void;
           disableAutoSelect: () => void;
         };
-        oauth2: { // Add the oauth2 namespace
+        oauth2: {
           initCodeClient: (config: {
             client_id: string;
             scope: string;
-            ux_mode: 'popup' | 'redirect';
-            redirect_uri?: string; // Needed for redirect mode
-            callback?: (codeResponse: GoogleCodeResponse) => void; // Used in popup mode
-            error_callback?: (errorResponse: GoogleErrorResponse) => void; // Added error callback
+            ux_mode: "popup" | "redirect";
+            redirect_uri?: string;
+            callback?: (codeResponse: GoogleCodeResponse) => void;
+            error_callback?: (errorResponse: GoogleErrorResponse) => void;
             state?: string;
             enable_granular_consent?: boolean;
           }) => GoogleCodeClient;
           hasGrantedAllScopes: (tokenResponse: any, scope: string) => boolean;
-          revoke: (token: string, done: () => void) => void; // Add revoke method
+          revoke: (token: string, done: () => void) => void;
         };
       };
     };
   }
 }
-// Specific types for code flow
+
 interface GoogleCodeResponse {
   code: string;
   scope: string;
@@ -90,6 +120,7 @@ interface GoogleCodeResponse {
   prompt: string;
   state?: string;
 }
+
 interface GoogleErrorResponse {
   type: string;
   error?: string;
@@ -97,10 +128,10 @@ interface GoogleErrorResponse {
   error_uri?: string;
   state?: string;
 }
+
 interface GoogleCodeClient {
   requestCode: () => void;
 }
-
 
 // --- Component ---
 export default function Home() {
@@ -111,63 +142,98 @@ export default function Home() {
   const [isLoadingSearch, setIsLoadingSearch] = useState<boolean>(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  // --- Auth State ---
+  // --- Auth / Session State ---
   const [user, setUser] = useState<DecodedJwt | null>(null);
+
+  // Opaque Google access token (used to call Google Books API on user's behalf)
   const [accessToken, setAccessToken] = useState<string | null>(null);
+
+  // ID token (JWT) from Google, used for Kong's openid-connect plugin validation
+  const [idToken, setIdToken] = useState<string | null>(null);
+
+  // UI state for auth flow
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // --- FIX: Define Gateway URL ---
-  const apiGatewayUrl = process.env.NEXT_PUBLIC_API_GATEWAY_URL || 'http://localhost:9000';
+  // --- API Gateway URL + Client ID ---
+  const apiGatewayUrl =
+      process.env.NEXT_PUBLIC_API_GATEWAY_URL || "http://104.154.223.55";
 
-  const googleClientId = "432449136597-b79cre253mc9pcpfjopv0mr5r22m9mlq.apps.googleusercontent.com"; // Your Client ID
+  const googleClientId =
+      process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ||
+      "1033367449745-tgkqjo35chh3mqiprqqo8lfup01am8p6.apps.googleusercontent.com";
 
   // --- Google Auth Code Client Trigger ---
   const handleLoginClick = useCallback(() => {
-    if (!window.google || !window.google.accounts || !window.google.accounts.oauth2) {
+    if (
+        !window.google ||
+        !window.google.accounts ||
+        !window.google.accounts.oauth2
+    ) {
       console.error("Google OAuth2 client not loaded");
-      setAuthError("Google Login library not ready. Please try again in a moment.");
+      setAuthError(
+          "Google Login library not ready. Please try again in a moment."
+      );
       return;
     }
+
     setIsAuthLoading(true);
     setAuthError(null);
+
     try {
-      // Initialize Code Client for Auth Code flow
       const client = window.google.accounts.oauth2.initCodeClient({
         client_id: googleClientId,
         scope: [
-          'openid',
-          'email',
-          'profile',
-          'https://www.googleapis.com/auth/books'
-        ].join(' '),
-        ux_mode: 'popup',
+          "openid",
+          "email",
+          "profile",
+          "https://www.googleapis.com/auth/books",
+        ].join(" "),
+        ux_mode: "popup",
         callback: async (codeResponse) => {
           console.log("Received auth code response:", codeResponse);
+
           if (codeResponse.code) {
             try {
-
-              // --- FIX: Use Gateway URL for Auth ---
-              const backendResponse = await fetch(`${apiGatewayUrl}/api/auth/google/exchange`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code: codeResponse.code })
-              });
+              // Exchange the auth code for tokens via our backend (through Kong)
+              const backendResponse = await fetch(
+                  `${apiGatewayUrl}/api/auth/google/exchange`,
+                  {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ code: codeResponse.code }),
+                  }
+              );
 
               if (!backendResponse.ok) {
                 let errorMsg = `Code exchange failed: ${backendResponse.statusText}`;
-                try { const errJson = await backendResponse.json(); errorMsg = errJson.error || errorMsg; } catch (e) {}
+                try {
+                  const errJson = await backendResponse.json();
+                  errorMsg = errJson.error || errorMsg;
+                } catch (e) {
+                  /* ignore JSON parse err */
+                }
                 throw new Error(errorMsg);
               }
 
-              const tokenData: BackendTokenResponse = await backendResponse.json();
+              const tokenData: BackendTokenResponse =
+                  await backendResponse.json();
               console.log("Received tokens from backend:", tokenData);
+
+              // For display (UI)
               setUser(tokenData.user_info);
+
+              // For calling Google Books later from backend
               setAccessToken(tokenData.access_token);
 
+              // For Kong to validate at the gateway (OIDC plugin)
+              setIdToken(tokenData.id_token);
             } catch (exchangeError: any) {
               console.error("Error exchanging code:", exchangeError);
-              setAuthError(exchangeError.message || "Failed to exchange authorization code.");
+              setAuthError(
+                  exchangeError.message ||
+                  "Failed to exchange authorization code."
+              );
             } finally {
               setIsAuthLoading(false);
             }
@@ -178,57 +244,79 @@ export default function Home() {
           }
         },
         error_callback: (errorResponse: GoogleErrorResponse) => {
-          console.error('Google Auth Code Error:', errorResponse);
-          setAuthError(errorResponse?.error_description || errorResponse?.error || 'Google login failed.');
+          console.error("Google Auth Code Error:", errorResponse);
+          setAuthError(
+              errorResponse?.error_description ||
+              errorResponse?.error ||
+              "Google login failed."
+          );
           setIsAuthLoading(false);
-        }
+        },
       });
+
       client.requestCode();
     } catch (initError) {
       console.error("Error initializing Google Code Client:", initError);
       setAuthError("Could not start Google login process.");
       setIsAuthLoading(false);
     }
-  }, [apiGatewayUrl]); // Add apiGatewayUrl as a dependency
-
+  }, [apiGatewayUrl, googleClientId]);
 
   // --- Handle Logout ---
   const handleLogout = () => {
-    const tokenToRevoke = accessToken; // Capture token before clearing state
+    const tokenToRevoke = accessToken; // capture before clearing
+
     setUser(null);
     setAccessToken(null);
-    if (window.google && window.google.accounts && window.google.accounts.id) {
+    setIdToken(null);
+    setAuthError(null);
+
+    // Clean up Google "remember me"
+    if (
+        window.google &&
+        window.google.accounts &&
+        window.google.accounts.id
+    ) {
       window.google.accounts.id.disableAutoSelect();
     }
-    // Optionally revoke the token on Google's side
+
+    // Optionally revoke access token at Google
     if (tokenToRevoke && window.google?.accounts?.oauth2?.revoke) {
       window.google.accounts.oauth2.revoke(tokenToRevoke, () => {
-        console.log('Google Access Token revoked.');
+        console.log("Google Access Token revoked.");
       });
     }
+
     console.log("User logged out");
   };
 
-
-  // --- Handle Search (Fetch Function) ---
+  // --- Handle Book Search (public-ish route through Kong) ---
   const handleSearch = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setIsLoadingSearch(true);
     setSearchError(null);
     setResults([]);
 
-    // --- FIX: Use Gateway URL for Search ---
-    const apiUrl = `${apiGatewayUrl}/api/books/search?term=${encodeURIComponent(searchType)}&search=${encodeURIComponent(searchTerm)}`;
+    const apiUrl = `${apiGatewayUrl}/api/books/search?term=${encodeURIComponent(
+        searchType
+    )}&search=${encodeURIComponent(searchTerm)}`;
 
     try {
       const response = await fetch(apiUrl);
       if (!response.ok) {
         let errorMsg = `Search Error: ${response.status} ${response.statusText}`;
-        try { const errorJson = await response.json(); errorMsg = errorJson.error || errorMsg; } catch (e) {}
+        try {
+          const errorJson = await response.json();
+          errorMsg = errorJson.error || errorMsg;
+        } catch (e) {
+          /* ignore parse error */
+        }
         throw new Error(errorMsg);
       }
+
       const data: BookSummary[] = await response.json();
       setResults(data);
+
       if (data.length === 0) {
         setSearchError("No books found matching your search criteria.");
       }
@@ -240,44 +328,69 @@ export default function Home() {
     }
   };
 
-  // --- Example Function to Fetch My Library (Protected) ---
+  // --- Fetch My Library (protected route through Kong OIDC) ---
   const fetchMyLibrary = async () => {
-    if (!accessToken) {
-      setAuthError("Please log in to view your library."); // Use authError for login issues
+    // We now require BOTH:
+    // - idToken: proves identity to Kong (Kong validates it with openid-connect)
+    // - accessToken: lets backend call Google Books
+    if (!accessToken || !idToken) {
+      setAuthError("Please log in to view your library.");
       return;
     }
+
     setIsLoadingSearch(true);
-    setSearchError(null); // Clear search errors specifically
-    setAuthError(null);   // Clear auth errors
+    setSearchError(null);
+    setAuthError(null);
     setResults([]);
 
-    // --- FIX: Use Gateway URL for Protected Route ---
     const myLibraryUrl = `${apiGatewayUrl}/api/my-library/bookshelves`;
 
     try {
       const response = await fetch(myLibraryUrl, {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
+        headers: {
+          // Kong openid-connect plugin validates THIS (ID token, JWT)
+          Authorization: `Bearer ${idToken}`,
+
+          // Backend uses THIS to call Google Books on behalf of the user
+          "X-Google-Access-Token": accessToken ?? "",
+        },
       });
 
       if (!response.ok) {
         let errorMsg = `Library fetch failed: ${response.status} ${response.statusText}`;
-        try { const errJson = await response.json(); errorMsg = errJson.error?.message || errJson.message || errJson.error || errorMsg; } catch(e){}
+
+        try {
+          const errJson = await response.json();
+          errorMsg =
+              errJson.error?.message ||
+              errJson.message ||
+              errJson.error ||
+              errorMsg;
+        } catch (e) {
+          /* ignore parse error */
+        }
+
         if (response.status === 401 || response.status === 403) {
-          errorMsg = "Authentication failed or token invalid/expired. Please log in again.";
-          // Force logout if token is rejected
+          // 401/403 here means:
+          // - Kong rejected the id_token (expired / invalid), OR
+          // - backend rejected because Google access token was bad.
+          errorMsg =
+              "Authentication failed or token invalid/expired. Please log in again.";
           handleLogout();
         }
+
         throw new Error(errorMsg);
       }
 
       const libraryData = await response.json();
       console.log("My Library Data:", libraryData);
-      // TODO: Implement display logic for library data
-      setSearchError("Successfully fetched library data (check console). Display logic needed.");
 
+      // TODO: Replace this with actual rendering of libraryData in UI
+      setSearchError(
+          "Successfully fetched library data (check console). Display logic needed."
+      );
     } catch (err: any) {
       console.error("Error fetching library:", err);
-      // Show library-specific errors using the authError state
       setAuthError(err.message || "Failed to fetch library.");
     } finally {
       setIsLoadingSearch(false);
@@ -289,39 +402,62 @@ export default function Home() {
       <div className="container mx-auto font-sans p-4 sm:p-8 min-h-screen flex flex-col">
         <header className="text-center my-8 flex flex-col sm:flex-row justify-between items-center gap-4">
           <h1 className="text-3xl font-bold">Google Books Search</h1>
+
           {/* --- Auth Section --- */}
           <div className="auth-section">
             {!user && (
                 <Button onClick={handleLoginClick} disabled={isAuthLoading}>
-                  {isAuthLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {isAuthLoading && (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  )}
                   <LogIn className="mr-2 h-4 w-4" /> Sign in with Google
                 </Button>
             )}
+
             {user && (
                 <div className="flex items-center gap-4">
-                  <Button onClick={fetchMyLibrary} variant="outline" disabled={isLoadingSearch}>
-                    {/* Show loader only if loading *library* data */}
-                    {isLoadingSearch && results.length === 0 && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  <Button
+                      onClick={fetchMyLibrary}
+                      variant="outline"
+                      disabled={isLoadingSearch}
+                  >
+                    {isLoadingSearch && results.length === 0 && (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    )}
                     View My Library
                   </Button>
+
                   <div className="text-right">
                     <p className="text-sm font-medium">{user.name}</p>
                     <p className="text-xs text-muted-foreground">{user.email}</p>
                   </div>
+
                   {user.picture && (
-                      // Add configuration in next.config.js for googleusercontent.com if needed
-                      <Image src={user.picture} alt="User profile" width={40} height={40} className="rounded-full" />
+                      <Image
+                          src={user.picture}
+                          alt="User profile"
+                          width={40}
+                          height={40}
+                          className="rounded-full"
+                      />
                   )}
-                  <Button variant="outline" size="icon" onClick={handleLogout} title="Log Out">
+
+                  <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={handleLogout}
+                      title="Log Out"
+                  >
                     <LogOut className="h-4 w-4" />
                   </Button>
                 </div>
             )}
           </div>
         </header>
-        {/* Display Auth Errors */}
+
+        {/* Display Auth / Access Errors */}
         {authError && (
-            <Alert variant="destructive" className="w-full max-w-2xl mx-auto mb-4">
+            <Alert className="w-full max-w-2xl mx-auto mb-4" variant="destructive">
               <AlertCircle className="h-4 w-4" />
               <AlertTitle>Login/Access Error</AlertTitle>
               <AlertDescription>{authError}</AlertDescription>
@@ -329,28 +465,45 @@ export default function Home() {
         )}
 
         {/* --- Search Form --- */}
-        <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-2 w-full max-w-2xl mx-auto items-center mb-8">
+        <form
+            onSubmit={handleSearch}
+            className="flex flex-col sm:flex-row gap-2 w-full max-w-2xl mx-auto items-center mb-8"
+        >
           <Select value={searchType} onValueChange={setSearchType}>
-            <SelectTrigger className="w-full sm:w-[120px]"> <SelectValue placeholder="Type" /> </SelectTrigger>
+            <SelectTrigger className="w-full sm:w-[120px]">
+              <SelectValue placeholder="Type" />
+            </SelectTrigger>
             <SelectContent>
               <SelectItem value="general">General</SelectItem>
               <SelectItem value="intitle">Title</SelectItem>
               <SelectItem value="inauthor">Author</SelectItem>
             </SelectContent>
           </Select>
+
           <Input
-              type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search for books..." required className="flex-grow"
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search for books..."
+              required
+              className="flex-grow"
           />
-          <Button type="submit" disabled={isLoadingSearch || !searchTerm.trim()} className="w-full sm:w-auto">
-            {isLoadingSearch && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+
+          <Button
+              type="submit"
+              disabled={isLoadingSearch || !searchTerm.trim()}
+              className="w-full sm:w-auto"
+          >
+            {isLoadingSearch && (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            )}
             {isLoadingSearch ? "Searching..." : "Search"}
           </Button>
         </form>
 
         {/* --- Main Content Area --- */}
         <main className="flex-grow w-full max-w-5xl mx-auto">
-          {/* Loading Indicator for Search */}
+          {/* Loading Indicator */}
           {isLoadingSearch && (
               <div className="flex justify-center items-center mt-10">
                 <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -358,21 +511,29 @@ export default function Home() {
               </div>
           )}
 
-          {/* Search Error Display */}
+          {/* Search / Library Notice */}
           {searchError && !isLoadingSearch && (
-              <Alert variant="destructive" className="w-full max-w-2xl mx-auto mt-4">
+              <Alert
+                  variant="destructive"
+                  className="w-full max-w-2xl mx-auto mt-4"
+              >
                 <AlertCircle className="h-4 w-4" />
                 <AlertTitle>Search Notice</AlertTitle>
                 <AlertDescription>{searchError}</AlertDescription>
               </Alert>
           )}
 
-          {/* Initial / No Search Results Message */}
-          {!isLoadingSearch && !searchError && results.length === 0 && !authError && ( // Hide if there's an auth error
-              <p className="text-center text-muted-foreground mt-10">
-                {searchTerm && !isLoadingSearch ? "No books found." : "Enter a search term or view your library if logged in."}
-              </p>
-          )}
+          {/* Initial / No Results Message */}
+          {!isLoadingSearch &&
+              !searchError &&
+              results.length === 0 &&
+              !authError && (
+                  <p className="text-center text-muted-foreground mt-10">
+                    {searchTerm && !isLoadingSearch
+                        ? "No books found."
+                        : "Enter a search term or view your library if logged in."}
+                  </p>
+              )}
 
           {/* Search Results Grid */}
           {!isLoadingSearch && !searchError && results.length > 0 && (
@@ -383,23 +544,33 @@ export default function Home() {
                         {book.thumbnailLink ? (
                             <div className="relative aspect-[3/4] w-full mb-2 bg-muted rounded-md overflow-hidden">
                               <Image
-                                  src={book.thumbnailLink.replace(/^http:/, 'https:')}
+                                  src={book.thumbnailLink.replace(/^http:/, "https:")}
                                   alt={`Cover of ${book.title}`}
                                   fill
                                   sizes="(max-width: 640px) 90vw, (max-width: 768px) 45vw, (max-width: 1024px) 30vw, 23vw"
-                                  style={{ objectFit: 'contain' }}
+                                  style={{ objectFit: "contain" }}
                                   className="transition-opacity opacity-0 duration-500"
-                                  onLoadingComplete={(image) => image.classList.remove('opacity-0')}
-                                  unoptimized={book.thumbnailLink.includes('googleusercontent.com')}
+                                  onLoadingComplete={(image) =>
+                                      image.classList.remove("opacity-0")
+                                  }
+                                  unoptimized={book.thumbnailLink.includes(
+                                      "googleusercontent.com"
+                                  )}
                                   onError={(e) => {
-                                    const parentDiv = e.currentTarget.closest('div');
-                                    if (parentDiv) parentDiv.style.display = 'none';
-                                    const cardHeader = e.currentTarget.closest('.p-4');
-                                    const placeholder = cardHeader?.querySelector('.image-placeholder-fallback') as HTMLElement | null;
-                                    if (placeholder) placeholder.style.display = 'flex';
+                                    const parentDiv = e.currentTarget.closest("div");
+                                    if (parentDiv) parentDiv.style.display = "none";
+                                    const cardHeader =
+                                        e.currentTarget.closest(".p-4");
+                                    const placeholder = cardHeader?.querySelector(
+                                        ".image-placeholder-fallback"
+                                    ) as HTMLElement | null;
+                                    if (placeholder) placeholder.style.display = "flex";
                                   }}
                               />
-                              <div className="image-placeholder-fallback absolute inset-0 flex items-center justify-center bg-muted text-muted-foreground text-xs p-2 text-center" style={{ display: 'none' }}>
+                              <div
+                                  className="image-placeholder-fallback absolute inset-0 flex items-center justify-center bg-muted text-muted-foreground text-xs p-2 text-center"
+                                  style={{ display: "none" }}
+                              >
                                 Image not available
                               </div>
                             </div>
@@ -408,18 +579,24 @@ export default function Home() {
                               Image not available
                             </div>
                         )}
-                        <CardTitle className="text-base font-semibold line-clamp-2">{book.title}</CardTitle>
+
+                        <CardTitle className="text-base font-semibold line-clamp-2">
+                          {book.title}
+                        </CardTitle>
+
                         {book.authors && (
                             <CardDescription className="text-xs line-clamp-1">
                               By {book.authors.join(", ")}
                             </CardDescription>
                         )}
                       </CardHeader>
+
                       <CardContent className="p-4 pt-0 flex-grow">
                         <p className="text-xs text-muted-foreground line-clamp-4">
                           {book.description || "No description available."}
                         </p>
                       </CardContent>
+
                       <CardFooter className="p-4 pt-0 text-xs text-muted-foreground">
                         {book.pageCount ? `${book.pageCount} pages` : ""}
                       </CardFooter>

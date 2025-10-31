@@ -1,57 +1,84 @@
 package controllers
 
-import play.api.libs.json.Json
-import play.api.mvc.{Action, AnyContent, BaseController, ControllerComponents}
-import services.GoogleBooksService
-
 import javax.inject._
 import scala.concurrent.{ExecutionContext, Future}
+
+import play.api.mvc._
+import play.api.libs.json._
+
+import services.GoogleBooksService
+import models.APIError // assuming you already have this in scope somewhere
 
 @Singleton
 class MyLibraryController @Inject()(
                                      val controllerComponents: ControllerComponents,
                                      googleBooksService: GoogleBooksService
-                                   )
-                                   (implicit ec: ExecutionContext)
-  extends BaseController{
+                                   )(
+                                     implicit ec: ExecutionContext
+                                   ) extends BaseController {
 
-  // --- Action to get user's bookshelves ---
-  def getBookshelves(): Action[AnyContent] = Action.async { implicit request => // <-- Add implicit request => here
-    // Extract the Access Token passed from Kong (or frontend via Kong)
-    val accessTokenOpt: Option[String] = request.headers.get("Authorization")
-      .filter(_.startsWith("Bearer "))
-      .map(_.drop(7)) // Remove "Bearer " prefix
+  /**
+   * GET /api/my-library/bookshelves
+   *
+   * Flow:
+   * - Browser -> Kong:
+   *     Authorization: Bearer <id_token>
+   *     X-Google-Access-Token: <access_token>
+   *
+   * - Kong:
+   *     - validates the id_token via openid-connect plugin (OIDC)
+   *     - if valid, proxies request to THIS controller
+   *
+   * - Backend (this controller):
+   *     - extracts X-Google-Access-Token (the real Google OAuth access token)
+   *     - calls Google Books API on behalf of the user
+   *     - returns shelves JSON back to the browser
+   */
+  def getBookshelves(): Action[AnyContent] = Action.async { implicit request =>
+    // IMPORTANT:
+    // Do NOT trust request.headers.get("Authorization") here for Google.
+    // That header is the ID TOKEN (validated already by Kong).
+    //
+    // We need the opaque Google access token, which the frontend sent in:
+    //   X-Google-Access-Token: <access_token>
+    val googleAccessTokenOpt: Option[String] =
+      request.headers.get("X-Google-Access-Token").map(_.trim).filter(_.nonEmpty)
 
-    accessTokenOpt match {
-      case Some(token) =>
-        // Call the service method to fetch bookshelves using the token
-        googleBooksService.getMyBookshelves(token).value.map { // .value unwraps the EitherT
+    googleAccessTokenOpt match {
+      case Some(googleAccessToken) =>
+        // Ask our service to fetch shelves from Google using the user's access token.
+        googleBooksService.getMyBookshelves(googleAccessToken).value.map {
           case Right(bookshelvesData) =>
-            // Successfully fetched data, return it as JSON
-            Ok(Json.toJson(bookshelvesData)) // Implicit OFormat[BookshelfList] should be found now
+            // Happy path: return Google's data to the frontend
+            Ok(Json.toJson(bookshelvesData))
 
           case Left(apiError) =>
-            // An error occurred (e.g., token invalid, Google API error)
-            Status(apiError.httpResponseStatus)(Json.obj("error" -> apiError.reason))
+            // Could be:
+            // - Google said 401/403 (expired or invalid access token)
+            // - parse error
+            // - upstream network issue
+            Status(apiError.httpResponseStatus)(
+              Json.obj("error" -> apiError.reason)
+            )
         }
+
       case None =>
-        // This *shouldn't* happen if Kong's OIDC plugin is correctly configured and enforced
-        // But handle defensively. Kong should ideally block unauthorized requests.
-        Future.successful(Unauthorized(Json.obj("error" -> "Authorization token is missing or invalid.")))
+        // Kong let them through (OIDC passed), but they didn't include or lost
+        // the Google access token that authorises us to hit Google Books.
+        Future.successful(
+          Unauthorized(
+            Json.obj(
+              "error" -> "Missing X-Google-Access-Token header; cannot access Google Books."
+            )
+          )
+        )
     }
-  } // <-- Closing brace for the Action.async block
+  }
 
-  // --- (Optional) Action to get volumes on a specific shelf ---
-  // def getVolumesOnShelf(shelfId: String): Action[AnyContent] = Action.async { implicit request =>
-  //   val accessTokenOpt: Option[String] = request.headers.get("Authorization") // ... extract token ...
-  //   accessTokenOpt match {
-  //     case Some(token) =>
-  //       // Call service method: googleBooksService.getVolumesForShelf(token, shelfId).value.map { ... }
-  //       Future.successful(NotImplemented("Endpoint not yet implemented")) // Placeholder
-  //     case None =>
-  //       Future.successful(Unauthorized(Json.obj("error" -> "Authorization token is missing or invalid.")))
-  //   }
-  // }
-
-
+  // If you later add:
+  // GET /api/my-library/bookshelves/:shelfId/volumes
+  // you will follow the same pattern:
+  //   - extract X-Google-Access-Token
+  //   - call Google with that token
+  //   - pipe back results
 }

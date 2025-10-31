@@ -40,6 +40,7 @@ class GoogleBooksConnector @Inject()(
     ws.url(bookshelvesUrl)
       // IMPORTANT: Add the Authorization header with the user's token
       .addHttpHeaders("Authorization" -> s"Bearer $accessToken")
+      .withQueryStringParameters("country" -> "GB")
       .get() // Returns Future[WSResponse]
   }
 
