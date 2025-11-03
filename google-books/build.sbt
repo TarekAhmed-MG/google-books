@@ -32,11 +32,13 @@ lazy val root = (project in file("."))
       guice,
       ws,
       filters,
-      "org.typelevel" %% "cats-core" % "2.10.0",
+      "org.typelevel" %% "cats-core" % "2.13.0",
       "uk.gov.hmrc.mongo" %% "hmrc-mongo-play-29" % "1.9.0",
       "com.google.cloud" % "google-cloud-secretmanager" % "2.78.0",
+      "com.google.api-client" % "google-api-client" % "2.6.0",
+      "com.google.http-client" % "google-http-client-gson" % "1.43.3",
       "org.scalatest" %% "scalatest" % "3.2.19" % Test,
-      "org.scalamock" %% "scalamock" % "6.0.0" % Test,
+      "org.scalamock" %% "scalamock" % "7.5.0" % Test,
       "org.scalatestplus.play" %% "scalatestplus-play" % "7.0.2" % Test
     ),
 
