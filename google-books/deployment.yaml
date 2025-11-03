@@ -28,6 +28,11 @@ spec:
                 secretKeyRef:
                   name: play-secret-key
                   key: secret
+
+            # Google redirect URI (overrides default in application.conf)
+            - name: GOOGLE_REDIRECT_URI
+              value: "postmessage"
+
             - name: JAVA_TOOL_OPTIONS
               value: >-
                 -Dhttp.port=9000
@@ -35,16 +40,20 @@ spec:
                 -Dplay.http.secret.key=$(PLAY_HTTP_SECRET_KEY)
                 -Dplay.server.pidfile.path=/dev/null
                 -Dplay.http.session.jwt.enabled=false
+                -Dplay.filters.hosts.allowed.2=api.definityai.org
+
           readinessProbe:
             tcpSocket:
               port: 9000
             initialDelaySeconds: 15
             periodSeconds: 5
+
           livenessProbe:
             tcpSocket:
               port: 9000
             initialDelaySeconds: 30
             periodSeconds: 10
+
           resources:
             requests:
               cpu: "100m"
