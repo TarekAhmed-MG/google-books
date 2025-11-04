@@ -1,31 +1,49 @@
 "use client";
 
 import Image from "next/image";
-import { LogOut, Loader2 } from "lucide-react";
+import { LogOut, Loader2, LogIn } from "lucide-react"; // <--- FIX: Added LogIn
 import { useGoogleBooks } from "@/app/google-books-provider";
 import { Button } from "@/components/ui/button";
-
-// Assume GoogleyWordmark is moved to its own file
-// import { GoogleyWordmark } from "./Brand";
 
 // Placeholder
 function GoogleyWordmark({ size = "lg" as "lg" | "sm" }) {
     const base = "text-lg font-semibold tracking-[-0.02em] leading-none";
-    return <div className={`select-none ${base} text-[#4285F4]`}>Mercator Library</div>;
+    return (
+        <div className={`select-none ${base} text-[#4285F4]`}>
+            Mercator Library
+        </div>
+    );
 }
 
-
 export function AppHeader() {
-    const { user, logout, fetchLibrary, isLoadingShelves } = useGoogleBooks();
+    // --- FIX: Added login and isAuthLoading ---
+    const { user, logout, fetchLibrary, isLoadingShelves, login, isAuthLoading } =
+        useGoogleBooks();
 
     if (!user) {
-        // Header is simpler when logged out
+        // --- FIX: Added the Sign in Button here ---
         return (
             <header className="flex items-center justify-between border-b bg-card/50 px-4 py-3 sm:px-6">
                 <GoogleyWordmark size="sm" />
-                {/* Login button is on the landing page, not header */}
+                <Button
+                    onClick={login}
+                    disabled={isAuthLoading}
+                    className="rounded-full px-4 py-2 text-sm font-medium shadow-sm"
+                >
+                    {isAuthLoading ? (
+                        <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Signing in...
+                        </>
+                    ) : (
+                        <>
+                            <LogIn className="mr-2 h-4 w-4" />
+                            Sign in
+                        </>
+                    )}
+                </Button>
             </header>
-        )
+        );
     }
 
     // Signed-in header

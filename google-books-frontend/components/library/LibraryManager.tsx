@@ -39,7 +39,7 @@ export function LibraryManager() {
         idToken,
         removeBookFromShelf,
         getMutationState,
-        handleLogout, // Use this if our token fails
+        logout, // Use this if our token fails
     } = useGoogleBooks();
 
     // Local state for the *active* shelf
@@ -82,7 +82,7 @@ export function LibraryManager() {
                             errJson.error?.message || errJson.message || errJson.error || errorMsg;
                     } catch {}
                     if (response.status === 401) {
-                        handleLogout(); // Token failed, log out
+                        logout(); // Token failed, log out
                     }
                     throw new Error(errorMsg);
                 }
@@ -97,7 +97,7 @@ export function LibraryManager() {
                 setIsLoadingVolumes(false);
             }
         },
-        [accessToken, idToken, handleLogout]
+        [accessToken, idToken, logout]
     );
 
     // --- Logic: Remove a Book ---
