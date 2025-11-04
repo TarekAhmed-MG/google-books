@@ -107,7 +107,6 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
     const [libraryError, setLibraryError] = useState<string | null>(null);
 
     // --- NEW: Mutation State ---
-    // Tracks loading/error status per book ID for add/remove operations
     const [mutations, setMutations] = useState<Record<string, MutationState>>({});
 
     // --- Internal: Clear all session state ---
@@ -118,7 +117,7 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
         setLibraryShelves(null);
         setAuthError(null);
         setLibraryError(null);
-        setMutations({}); // Also clear mutation status
+        setMutations({});
     }, []);
 
     // --- Internal: Fetch Library (callable) ---
@@ -143,7 +142,7 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
                     let msg = `Library fetch failed: ${resp.status} ${resp.statusText}`;
                     if (resp.status === 401) {
                         msg = "Token invalid/expired. Please log in again.";
-                        clearSession(); // Clear session on auth error
+                        clearSession();
                     } else {
                         try {
                             const err = await resp.json();
@@ -176,7 +175,6 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
         onSuccess: async (codeResponse) => {
             setAuthError(null);
             try {
-                // 1. Exchange code
                 const backendResponse = await fetch(
                     `${API_GATEWAY_URL}/api/auth/google/exchange`,
                     {
@@ -195,12 +193,10 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
 
                 const tokenData: BackendTokenResponse = await backendResponse.json();
 
-                // 2. Set user and tokens
                 setUser(tokenData.user_info);
                 setAccessToken(tokenData.access_token);
                 setIdToken(tokenData.id_token);
 
-                // 3. Fetch library (don't need to await)
                 fetchLibrary(tokenData.access_token, tokenData.id_token);
             } catch (ex: unknown) {
                 setAuthError(ex instanceof Error ? ex.message : "Login failed");
@@ -227,7 +223,6 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
             window.google.accounts.id.disableAutoSelect();
         }
         if (tokenToRevoke && window.google?.accounts?.oauth2?.revoke) {
-            // Fire-and-forget token revocation
             window.google.accounts.oauth2.revoke(tokenToRevoke, () => {});
         }
     }, [accessToken, clearSession]);
@@ -244,6 +239,16 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
         [libraryShelves]
     );
 
+    // --- FIX: Helper to reset mutation state after a delay ---
+    const clearMutationState = (bookId: string) => {
+        setTimeout(() => {
+            setMutations((prev) => ({
+                ...prev,
+                [bookId]: { status: "idle", message: null },
+            }));
+        }, 2000); // Reset after 2 seconds
+    };
+
     // --- NEW: Add book to shelf function ---
     const addBookToShelf = useCallback(
         async (bookId: string, shelfId: string) => {
@@ -252,7 +257,6 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
                 return;
             }
 
-            // Set loading state *for this book*
             setMutations((prev) => ({
                 ...prev,
                 [bookId]: { status: "loading", message: null },
@@ -278,27 +282,25 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
                         const errJson = await resp.json();
                         msg = errJson.error || errJson.message || msg;
                     } catch {}
-                    if (resp.status === 401) clearSession(); // Token failed
+                    if (resp.status === 401) clearSession();
                     throw new Error(msg);
                 }
 
-                // Set success state
                 setMutations((prev) => ({
                     ...prev,
                     [bookId]: { status: "success", message: "Added ✅" },
                 }));
 
-                // Refresh the master shelf list to update volume counts
                 await fetchLibrary(accessToken, idToken);
+                clearMutationState(bookId); // <-- FIX: Reset state after success
 
             } catch (err: unknown) {
                 const message = err instanceof Error ? err.message : "Failed to add book.";
-                // Set error state
                 setMutations((prev) => ({
                     ...prev,
                     [bookId]: { status: "error", message },
                 }));
-                // Re-throw so the component can be notified of the error
+                clearMutationState(bookId); // <-- FIX: Also reset state after error
                 throw err;
             }
         },
@@ -347,8 +349,8 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
                     [bookId]: { status: "success", message: "Removed 🗑️" },
                 }));
 
-                // Refresh the master shelf list
                 await fetchLibrary(accessToken, idToken);
+                clearMutationState(bookId); // <-- FIX: Reset state after success
 
             } catch (err: unknown) {
                 const message =
@@ -357,6 +359,7 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
                     ...prev,
                     [bookId]: { status: "error", message },
                 }));
+                clearMutationState(bookId); // <-- FIX: Also reset state after error
                 throw err;
             }
         },
@@ -414,7 +417,7 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
             addableShelves,
             addBookToShelf,
             removeBookFromShelf,
-            getMutationState, // getMutationState depends on `mutations`
+            getMutationState,
         ]
     );
 

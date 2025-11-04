@@ -39,7 +39,7 @@ export function LibraryManager() {
         idToken,
         removeBookFromShelf,
         getMutationState,
-        logout, // Use this if our token fails
+        logout,
     } = useGoogleBooks();
 
     // Local state for the *active* shelf
@@ -59,7 +59,7 @@ export function LibraryManager() {
 
             setIsLoadingVolumes(true);
             setShelfError(null);
-            setShelfVolumes(null);
+            setShelfVolumes(null); // Clear old volumes
             setActiveShelfId(shelfId);
             setActiveShelfTitle(shelfTitle);
 
@@ -82,17 +82,20 @@ export function LibraryManager() {
                             errJson.error?.message || errJson.message || errJson.error || errorMsg;
                     } catch {}
                     if (response.status === 401) {
-                        logout(); // Token failed, log out
+                        logout();
                     }
                     throw new Error(errorMsg);
                 }
 
                 const data = await response.json();
-                setShelfVolumes(
-                    data && Array.isArray(data.items) ? (data.items as ShelfVolume[]) : []
-                );
+                const volumes = data && Array.isArray(data.items) ? (data.items as ShelfVolume[]) : [];
+                setShelfVolumes(volumes);
+
             } catch (err: unknown) {
                 setShelfError(err instanceof Error ? err.message : "Failed to fetch shelf.");
+                // Clear active shelf on error
+                setActiveShelfId(null);
+                setActiveShelfTitle(null);
             } finally {
                 setIsLoadingVolumes(false);
             }
@@ -103,8 +106,10 @@ export function LibraryManager() {
     // --- Logic: Remove a Book ---
     const handleRemove = async (volumeId: string, shelfId: number) => {
         try {
+            // This provider function already calls fetchLibrary() to update counts
             await removeBookFromShelf(volumeId, String(shelfId));
-            // Success! Refetch the volumes for this shelf to show the change
+
+            // Now, we must also refetch the *volumes list* to see the change
             if (activeShelfId) {
                 await fetchShelfVolumes(activeShelfId, activeShelfTitle || "");
             }
@@ -139,21 +144,29 @@ export function LibraryManager() {
                     )}
                     <div className="flex flex-wrap gap-2">
                         {libraryShelves &&
-                            libraryShelves.map((shelf) => (
-                                <Button
-                                    key={shelf.id}
-                                    variant={
-                                        activeShelfId === shelf.id ? "default" : "outline"
-                                    }
-                                    size="sm"
-                                    className="rounded-full text-xs font-medium h-8 px-3"
-                                    onClick={() =>
-                                        fetchShelfVolumes(shelf.id, shelf.title || "Shelf")
-                                    }
-                                >
-                                    {shelf.title} ({shelf.volumeCount || 0})
-                                </Button>
-                            ))}
+                            libraryShelves.map((shelf) => {
+                                const isActive = activeShelfId === shelf.id;
+
+                                const displayCount = (isActive && shelfVolumes !== null)
+                                    ? shelfVolumes.length
+                                    : (shelf.volumeCount || 0);
+
+                                return (
+                                    <Button
+                                        key={shelf.id}
+                                        variant={
+                                            activeShelfId === shelf.id ? "default" : "outline"
+                                        }
+                                        size="sm"
+                                        className="rounded-full text-xs font-medium h-8 px-3"
+                                        onClick={() =>
+                                            fetchShelfVolumes(shelf.id, shelf.title || "Shelf")
+                                        }
+                                    >
+                                        {shelf.title} ({displayCount})
+                                    </Button>
+                                );
+                            })}
                     </div>
                 </CardContent>
             </Card>
@@ -201,6 +214,7 @@ export function LibraryManager() {
                                         <div className="relative h-20 w-16 flex-shrink-0 overflow-hidden rounded-md bg-muted">
                                             {vol.volumeInfo.imageLinks?.thumbnail ? (
                                                 <Image
+                                                    // --- FIX: Corrected "httpsB:" to "https:" ---
                                                     src={vol.volumeInfo.imageLinks.thumbnail.replace(
                                                         /^http:/,
                                                         "https:"
