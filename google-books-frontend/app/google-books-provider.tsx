@@ -10,7 +10,7 @@ import React, {
 } from "react";
 import { useGoogleIdentity } from "@/hooks/use-google-identity";
 
-// --- Types (mostly from your page.tsx) ---
+// --- Types ---
 
 interface DecodedJwt {
     iss: string;
@@ -45,8 +45,6 @@ interface BackendTokenResponse {
     expires_in: number;
 }
 
-// --- NEW: Types for book mutations (add/remove) ---
-
 type MutationStatus = "idle" | "loading" | "success" | "error";
 
 interface MutationState {
@@ -71,12 +69,14 @@ interface GoogleBooksContextType {
     isLoadingShelves: boolean;
     libraryError: string | null;
     fetchLibrary: () => Promise<void>;
+    libraryVersion: number; // <--- 🔧 NEW
 
-    // --- NEW: For BookSearchResultItem & LibraryManager ---
+    // Mutations
     addableShelves: ShelfInfo[];
     addBookToShelf: (bookId: string, shelfId: string) => Promise<void>;
     removeBookFromShelf: (bookId: string, shelfId: string) => Promise<void>;
     getMutationState: (bookId: string) => MutationState;
+    resetMutationStatus: (bookId: string) => void;
 }
 
 // --- Context Definition ---
@@ -89,7 +89,7 @@ const GoogleBooksContext = createContext<GoogleBooksContextType | undefined>(
 const API_GATEWAY_URL = process.env.NEXT_PUBLIC_API_GATEWAY_URL as string;
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID as string;
 
-// --- NEW: Config for addable shelves ---
+// --- Config for addable shelves ---
 const ALLOWED_SHELVES = ["Reading now", "Favorites", "To read"] as const;
 
 // --- Provider Component ---
@@ -106,8 +106,9 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
     const [isLoadingShelves, setIsLoadingShelves] = useState(false);
     const [libraryError, setLibraryError] = useState<string | null>(null);
 
-    // --- NEW: Mutation State ---
+    // --- Mutation State ---
     const [mutations, setMutations] = useState<Record<string, MutationState>>({});
+    const [libraryVersion, setLibraryVersion] = useState(0); // <--- 🔧 NEW
 
     // --- Internal: Clear all session state ---
     const clearSession = useCallback(() => {
@@ -118,6 +119,7 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
         setAuthError(null);
         setLibraryError(null);
         setMutations({});
+        setLibraryVersion(0); // <--- 🔧 NEW
     }, []);
 
     // --- Internal: Fetch Library (callable) ---
@@ -153,9 +155,11 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
                 }
 
                 const data = await resp.json();
-                setLibraryShelves(
-                    data && Array.isArray(data.items) ? (data.items as ShelfInfo[]) : []
-                );
+                const shelves =
+                    data && Array.isArray(data.items) ? (data.items as ShelfInfo[]) : [];
+
+                setLibraryShelves(shelves);
+                setLibraryVersion((v) => v + 1); // <--- 🔧 NEW – notify consumers
             } catch (e: unknown) {
                 setLibraryError(e instanceof Error ? e.message : String(e));
             } finally {
@@ -165,7 +169,7 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
         [clearSession]
     );
 
-    // --- Auth Logic: Powered by our new hook ---
+    // --- Auth Logic ---
     const {
         startLogin,
         isReady: isGsiReady,
@@ -227,7 +231,7 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
         }
     }, [accessToken, clearSession]);
 
-    // --- NEW: Derived state for "addable" shelves ---
+    // --- Derived state for "addable" shelves ---
     const addableShelves: ShelfInfo[] = useMemo(
         () =>
             (libraryShelves || []).filter((shelf) => {
@@ -239,17 +243,7 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
         [libraryShelves]
     );
 
-    // --- FIX: Helper to reset mutation state after a delay ---
-    const clearMutationState = (bookId: string) => {
-        setTimeout(() => {
-            setMutations((prev) => ({
-                ...prev,
-                [bookId]: { status: "idle", message: null },
-            }));
-        }, 2000); // Reset after 2 seconds
-    };
-
-    // --- NEW: Add book to shelf function ---
+    // --- Add book to shelf function ---
     const addBookToShelf = useCallback(
         async (bookId: string, shelfId: string) => {
             if (!accessToken || !idToken) {
@@ -286,28 +280,38 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
                     throw new Error(msg);
                 }
 
+                // OPTIMISTIC UPDATE
+                setLibraryShelves(
+                    (prev) =>
+                        prev?.map((s) =>
+                            String(s.id) === String(shelfId) &&
+                            typeof s.volumeCount === "number"
+                                ? { ...s, volumeCount: s.volumeCount + 1 }
+                                : s
+                        ) || prev
+                );
+
                 setMutations((prev) => ({
                     ...prev,
                     [bookId]: { status: "success", message: "Added ✅" },
                 }));
 
+                // Fetch full library in background
                 await fetchLibrary(accessToken, idToken);
-                clearMutationState(bookId); // <-- FIX: Reset state after success
-
             } catch (err: unknown) {
                 const message = err instanceof Error ? err.message : "Failed to add book.";
                 setMutations((prev) => ({
                     ...prev,
                     [bookId]: { status: "error", message },
                 }));
-                clearMutationState(bookId); // <-- FIX: Also reset state after error
+                // Re-throw so component can be notified
                 throw err;
             }
         },
         [accessToken, idToken, fetchLibrary, clearSession]
     );
 
-    // --- NEW: Remove book from shelf function ---
+    // --- Remove book from shelf function ---
     const removeBookFromShelf = useCallback(
         async (bookId: string, shelfId: string) => {
             if (!accessToken || !idToken) {
@@ -344,14 +348,25 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
                     throw new Error(msg);
                 }
 
+                // OPTIMISTIC UPDATE
+                setLibraryShelves(
+                    (prev) =>
+                        prev?.map((s) =>
+                            String(s.id) === String(shelfId) &&
+                            typeof s.volumeCount === "number" &&
+                            s.volumeCount > 0
+                                ? { ...s, volumeCount: s.volumeCount - 1 }
+                                : s
+                        ) || prev
+                );
+
                 setMutations((prev) => ({
                     ...prev,
                     [bookId]: { status: "success", message: "Removed 🗑️" },
                 }));
 
+                // Fetch full library in background
                 await fetchLibrary(accessToken, idToken);
-                clearMutationState(bookId); // <-- FIX: Reset state after success
-
             } catch (err: unknown) {
                 const message =
                     err instanceof Error ? err.message : "Failed to remove book.";
@@ -359,20 +374,27 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
                     ...prev,
                     [bookId]: { status: "error", message },
                 }));
-                clearMutationState(bookId); // <-- FIX: Also reset state after error
                 throw err;
             }
         },
         [accessToken, idToken, fetchLibrary, clearSession]
     );
 
-    // --- NEW: Helper to get mutation status for a book ---
+    // --- Helper to get mutation status for a book ---
     const getMutationState = useCallback(
         (bookId: string): MutationState => {
             return mutations[bookId] || { status: "idle", message: null };
         },
         [mutations]
     );
+
+    // --- Function to reset button state ---
+    const resetMutationStatus = useCallback((bookId: string) => {
+        setMutations((prev) => ({
+            ...prev,
+            [bookId]: { status: "idle", message: null },
+        }));
+    }, []);
 
     // --- Public Context Value (Updated) ---
     const value = useMemo(
@@ -393,11 +415,13 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
                 accessToken && idToken
                     ? fetchLibrary(accessToken, idToken)
                     : Promise.resolve(),
+            libraryVersion, // <--- 🔧 NEW
             // Mutations & Derived State
             addableShelves,
             addBookToShelf,
             removeBookFromShelf,
             getMutationState,
+            resetMutationStatus,
         }),
         [
             // Auth
@@ -413,11 +437,13 @@ export function GoogleBooksProvider({ children }: { children: ReactNode }) {
             isLoadingShelves,
             libraryError,
             fetchLibrary,
+            libraryVersion, // <--- 🔧 NEW
             // Mutations & Derived State
             addableShelves,
             addBookToShelf,
             removeBookFromShelf,
             getMutationState,
+            resetMutationStatus,
         ]
     );
 

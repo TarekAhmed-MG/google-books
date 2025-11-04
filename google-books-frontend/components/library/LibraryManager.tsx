@@ -40,6 +40,7 @@ export function LibraryManager() {
         removeBookFromShelf,
         getMutationState,
         logout,
+        libraryVersion, // <--- 🔧 FIX 2b: Get new version number
     } = useGoogleBooks();
 
     // Local state for the *active* shelf
@@ -79,7 +80,10 @@ export function LibraryManager() {
                     try {
                         const errJson = await response.json();
                         errorMsg =
-                            errJson.error?.message || errJson.message || errJson.error || errorMsg;
+                            errJson.error?.message ||
+                            errJson.message ||
+                            errJson.error ||
+                            errorMsg;
                     } catch {}
                     if (response.status === 401) {
                         logout();
@@ -88,11 +92,13 @@ export function LibraryManager() {
                 }
 
                 const data = await response.json();
-                const volumes = data && Array.isArray(data.items) ? (data.items as ShelfVolume[]) : [];
+                const volumes =
+                    data && Array.isArray(data.items) ? (data.items as ShelfVolume[]) : [];
                 setShelfVolumes(volumes);
-
             } catch (err: unknown) {
-                setShelfError(err instanceof Error ? err.message : "Failed to fetch shelf.");
+                setShelfError(
+                    err instanceof Error ? err.message : "Failed to fetch shelf."
+                );
                 // Clear active shelf on error
                 setActiveShelfId(null);
                 setActiveShelfTitle(null);
@@ -106,16 +112,23 @@ export function LibraryManager() {
     // --- Logic: Remove a Book ---
     const handleRemove = async (volumeId: string, shelfId: number) => {
         try {
-            // This provider function already calls fetchLibrary() to update counts
+            // Optimistic update
+            setShelfVolumes((prev) =>
+                prev ? prev.filter((v) => v.id !== volumeId) : prev
+            );
+
+            // Call provider to update in background
             await removeBookFromShelf(volumeId, String(shelfId));
 
-            // Now, we must also refetch the *volumes list* to see the change
+            // The provider will increment libraryVersion,
+            // which will trigger the useEffect below to refetch volumes.
+
+        } catch (e) {
+            console.error(e);
+            // Refetch to add the book back if the API call failed
             if (activeShelfId) {
                 await fetchShelfVolumes(activeShelfId, activeShelfTitle || "");
             }
-        } catch (e) {
-            console.error(e);
-            // Error is already set in the context mutation state
         }
     };
 
@@ -128,6 +141,22 @@ export function LibraryManager() {
             setShelfError(null);
         }
     }, [idToken]);
+
+    // --- 🔧 FIX 2b: Re-fetch active shelf when library changes ---
+    useEffect(() => {
+        if (!accessToken || !idToken) return;
+        if (!activeShelfId) return;
+
+        // Don't refetch on the initial load (version 0)
+        if (libraryVersion === 0) return;
+
+        // Re-sync the active shelf volumes whenever the library changes
+        fetchShelfVolumes(activeShelfId, activeShelfTitle || "Shelf");
+
+        // We disable exhaustive-deps as per your instructions
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [libraryVersion]);
+    // --- END FIX ---
 
     return (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -145,11 +174,9 @@ export function LibraryManager() {
                     <div className="flex flex-wrap gap-2">
                         {libraryShelves &&
                             libraryShelves.map((shelf) => {
-                                const isActive = activeShelfId === shelf.id;
-
-                                const displayCount = (isActive && shelfVolumes !== null)
-                                    ? shelfVolumes.length
-                                    : (shelf.volumeCount || 0);
+                                // --- 🔧 FIX 3: Always use shelf.volumeCount ---
+                                const displayCount = shelf.volumeCount ?? 0;
+                                // --- END FIX ---
 
                                 return (
                                     <Button
@@ -214,7 +241,6 @@ export function LibraryManager() {
                                         <div className="relative h-20 w-16 flex-shrink-0 overflow-hidden rounded-md bg-muted">
                                             {vol.volumeInfo.imageLinks?.thumbnail ? (
                                                 <Image
-                                                    // --- FIX: Corrected "httpsB:" to "https:" ---
                                                     src={vol.volumeInfo.imageLinks.thumbnail.replace(
                                                         /^http:/,
                                                         "https:"
@@ -246,7 +272,7 @@ export function LibraryManager() {
                                                 disabled={status === "loading"}
                                                 onClick={() => handleRemove(vol.id!, activeShelfId)}
                                             >
-                                                {status === 'loading' ? (
+                                                {status === "loading" ? (
                                                     <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
                                                 ) : (
                                                     <X className="mr-2 h-3.5 w-3.5" />
@@ -254,9 +280,15 @@ export function LibraryManager() {
                                                 Remove
                                             </Button>
                                             {message && status !== "loading" && (
-                                                <p className={`mt-1.5 text-xs ${
-                                                    status === "error" ? "text-destructive" : "text-green-600"
-                                                }`}>{message}</p>
+                                                <p
+                                                    className={`mt-1.5 text-xs ${
+                                                        status === "error"
+                                                            ? "text-destructive"
+                                                            : "text-green-600"
+                                                    }`}
+                                                >
+                                                    {message}
+                                                </p>
                                             )}
                                         </div>
                                     </div>

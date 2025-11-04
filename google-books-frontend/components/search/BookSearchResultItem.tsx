@@ -27,9 +27,13 @@ interface BookSearchResultItemProps {
 }
 
 export function BookSearchResultItem({ book }: BookSearchResultItemProps) {
-    // Get all the "add" logic from our context and hook
-    const { user, addableShelves, addBookToShelf, getMutationState } =
-        useGoogleBooks();
+    const {
+        user,
+        addableShelves,
+        addBookToShelf,
+        getMutationState,
+        resetMutationStatus,
+    } = useGoogleBooks();
 
     // Local state for the dropdown
     const [selectedShelfId, setSelectedShelfId] = useState<string>("");
@@ -46,6 +50,11 @@ export function BookSearchResultItem({ book }: BookSearchResultItemProps) {
             // Error is already set in context, just log it
             console.error(e);
         }
+    };
+
+    const handleShelfChoiceChange = (shelfId: string) => {
+        setSelectedShelfId(shelfId);
+        resetMutationStatus(book.googleId); // Reset status on new selection
     };
 
     return (
@@ -78,12 +87,11 @@ export function BookSearchResultItem({ book }: BookSearchResultItemProps) {
                     {book.description || "No description available."}
                 </p>
 
-                {/* Only show "Add" UI if logged in and shelves are available */}
                 {user && addableShelves.length > 0 && (
                     <div className="flex items-center gap-2 mt-3">
                         <Select
                             value={selectedShelfId}
-                            onValueChange={setSelectedShelfId}
+                            onValueChange={handleShelfChoiceChange}
                             disabled={isLoading}
                         >
                             <SelectTrigger className="flex-1 w-full sm:w-[150px] rounded-full h-8 text-xs bg-muted/40 border-muted-foreground/20">
@@ -104,23 +112,26 @@ export function BookSearchResultItem({ book }: BookSearchResultItemProps) {
                         <Button
                             size="sm"
                             className="rounded-full h-8 text-xs px-3"
-                            disabled={!selectedShelfId || isLoading || status === "success"}
+                            // --- 🔧 FIX 1: Only disable while loading or if no shelf chosen ---
+                            disabled={!selectedShelfId || isLoading}
                             onClick={handleAdd}
                         >
                             {isLoading && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
-                            {status === "success" ? "Added!" : "Add"}
+                            {/* 🔧 FIX 1: Keep the label stable */}
+                            {isLoading ? "Adding..." : "Add"}
                         </Button>
                     </div>
                 )}
-                {message && (
-                    <p
-                        className={`mt-1.5 text-xs ${
-                            status === "error" ? "text-destructive" : "text-green-600"
-                        }`}
-                    >
-                        {message}
-                    </p>
-                )}
+                {/* 🔧 FIX 1: This message now correctly shows status */
+                    message && (
+                        <p
+                            className={`mt-1.5 text-xs ${
+                                status === "error" ? "text-destructive" : "text-green-600"
+                            }`}
+                        >
+                            {message}
+                        </p>
+                    )}
             </div>
         </div>
     );
