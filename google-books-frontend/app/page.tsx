@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useGoogleBooks } from "./google-books-provider";
 import { SignedOutLanding } from "@/components/landing/SignedOutLanding";
 import { SignedInDashboard } from "@/components/dashboard/SignedInDashboard";
@@ -34,9 +35,13 @@ export default function Home() {
         {/* Conditionally render the correct view */}
         {user ? <SignedInDashboard /> : <SignedOutLanding />}
 
-        <footer className="px-4 py-6 text-center text-[11px] text-muted-foreground">
-          Mercator Library • By Tarek
-        </footer>
+          {/* --- 2. MODIFIED THE FOOTER --- */}
+          <footer className="px-4 py-6 text-center text-[11px] text-muted-foreground">
+              Mercator Library • By Tarek •{" "}
+              <Link href="/privacy" className="underline hover:text-primary">
+                  Privacy Policy
+              </Link>
+          </footer>
       </div>
   );
 }
